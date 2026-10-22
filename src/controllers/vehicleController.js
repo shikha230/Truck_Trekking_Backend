@@ -1,11 +1,10 @@
 const { pool, traccarPool } = require('../config/db');
 
 const { calculateDistance, getGeofenceCenter } = require('../utils/distance'); // Aapki distance.js file
-
 const getLiveVehicles = async (req, res) => {
     try {
         const ourVehicles = await pool.query(`
-            SELECT v.name, v.traccar_id, s.current_state, s.last_update 
+            SELECT v.name, v.traccar_id, v.imei as vehicle_imei, s.current_state, s.last_update 
             FROM vehicles v
             LEFT JOIN vehicle_status s ON v.traccar_id = s.vehicle_id
             WHERE v.type = 'truck'
@@ -14,11 +13,11 @@ const getLiveVehicles = async (req, res) => {
         if (ourVehicles.rows.length === 0) return res.json([]);
         const ids = ourVehicles.rows.map(v => v.traccar_id);
 
-        // Fetch Live Positions & Attributes (Ignition, Speed, Body Up/Down via attributes) from Traccar
+        // Fetch Traccar devices & positions
         const traccarData = await traccarPool.query(`
-            SELECT d.id as traccar_id, p.latitude, p.longitude, p.speed, p.address, p.attributes
+            SELECT d.id as traccar_id, d.uniqueid as traccar_imei, p.latitude, p.longitude, p.speed, p.address, p.attributes
             FROM tc_devices d
-            JOIN tc_positions p ON p.id = d.positionid
+            LEFT JOIN tc_positions p ON p.id = d.positionid
             WHERE d.id = ANY($1)
         `, [ids]);
 
@@ -32,16 +31,15 @@ const getLiveVehicles = async (req, res) => {
         const unloadingCenter = unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null;
 
         const finalData = ourVehicles.rows.map(v => {
-            const gps = traccarData.rows.find(g => g.traccar_id === v.traccar_id);
+            // Number comparison to avoid type mismatch (String vs Number)
+            const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
             
             let distToLoading = 'N/A';
             let distToUnloading = 'N/A';
-
             let ignition = false;
-            let bodyStatus = 'Down'; // Default body status
+            let bodyStatus = 'Down';
 
             if (gps) {
-                // Parse attributes JSON object from Traccar
                 let attrs = {};
                 try {
                     attrs = typeof gps.attributes === 'string' ? JSON.parse(gps.attributes) : (gps.attributes || {});
@@ -49,11 +47,8 @@ const getLiveVehicles = async (req, res) => {
                     attrs = {};
                 }
 
-                // Extract Ignition (Traccar usually stores as boolean or string 'true'/'false' / 1/0)
                 ignition = attrs.ignition === true || attrs.ignition === 'true' || attrs.ignition === 1;
 
-                // Truck body up/down detection (Aapke sensor ke mutabiq io68, io69 ya specific attribute check kar sakte hain)
-                // Jaise screenshot me io69 ya io68 dikh raha hai, yahan hum generic attribute ya io check kar rahe hain:
                 if (attrs.io68 === 1 || attrs.io68 === '1' || attrs.body === 'up' || attrs.tipping === true) {
                     bodyStatus = 'Up';
                 } else {
@@ -72,13 +67,20 @@ const getLiveVehicles = async (req, res) => {
                 }
             }
 
+            // Stronger IMEI mapping logic:
+            // 1. local vehicles table imei
+            // 2. traccar uniqueid
+            // 3. fallback to traccar_id string
+            const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
+
             return {
                 ...v,
+                imei: finalImei,
                 latitude: gps ? gps.latitude : null,
                 longitude: gps ? gps.longitude : null,
                 speed: gps ? gps.speed : 0,
-                ignition: ignition,         // true/false
-                bodyStatus: bodyStatus,     // 'Up' or 'Down'
+                ignition: ignition,
+                bodyStatus: bodyStatus,
                 distToLoading,
                 distToUnloading
             };
@@ -86,20 +88,48 @@ const getLiveVehicles = async (req, res) => {
 
         res.status(200).json(finalData);
     } catch (err) {
+        console.error("Error in getLiveVehicles:", err);
         res.status(500).json({ error: err.message });
     }
 };
 // 2. Fetch All Registered Vehicles
 const getAllVehicles = async (req, res) => {
     try {
+        // 1. Fetch vehicles from local database
         const result = await pool.query(`
-            SELECT v.*, s.current_state, s.last_update 
+            SELECT v.id, v.name, v.traccar_id, v.type, v.imei as vehicle_imei, s.current_state, s.last_update 
             FROM vehicles v
             LEFT JOIN vehicle_status s ON v.traccar_id = s.vehicle_id
             ORDER BY v.id ASC
         `);
-        res.status(200).json(result.rows);
+
+        if (result.rows.length === 0) return res.json([]);
+        const ids = result.rows.map(v => v.traccar_id).filter(Boolean);
+
+        // 2. Fetch IMEI (uniqueid) from Traccar database using traccar_ids
+        let traccarData = { rows: [] };
+        if (ids.length > 0) {
+            traccarData = await traccarPool.query(`
+                SELECT id as traccar_id, uniqueid as traccar_imei 
+                FROM tc_devices 
+                WHERE id = ANY($1)
+            `, [ids]);
+        }
+
+        // 3. Map IMEI properly to each vehicle
+        const finalData = result.rows.map(v => {
+            const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
+            const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
+
+            return {
+                ...v,
+                imei: finalImei
+            };
+        });
+
+        res.status(200).json(finalData);
     } catch (err) {
+        console.error("Error in getAllVehicles:", err);
         res.status(500).json({ error: err.message });
     }
 };

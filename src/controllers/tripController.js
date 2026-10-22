@@ -59,29 +59,36 @@ const getRecentTrips = async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
-
-const getTruckHistory = async (req, res) => {
+};const getTruckHistory = async (req, res) => {
     const { deviceId } = req.params;
-    const { from, to } = req.query;
+    let { from, to, fromTime, toTime } = req.query;
 
     try {
+        // Fetch local geofences
         const zonesRes = await pool.query("SELECT * FROM geofences");
         const zones = zonesRes.rows;
-        
+
+        // Default time formatting if not provided (matches frontend values)
+        const startTimeStr = fromTime ? (fromTime.length === 5 ? `${fromTime}:00` : fromTime) : '00:00:00';
+        const endTimeStr = toTime ? (toTime.length === 5 ? `${toTime}:59` : toTime) : '23:59:59';
+
         let queryText = `
             SELECT p.devicetime, p.latitude, p.longitude, p.speed, p.attributes
-            FROM tc_positions p WHERE p.deviceid = $1
+            FROM tc_positions p 
+            WHERE p.deviceid = $1
         `;
         const queryParams = [deviceId];
 
         if (from && to) {
-            queryText += ` AND p.devicetime >= $2::timestamp AND p.devicetime < ($3::date + interval '1 day')`;
-            queryParams.push(from, to);
+            const startTimestamp = `${from} ${startTimeStr}`;
+            const endTimestamp = `${to} ${endTimeStr}`;
+
+            queryText += ` AND p.devicetime >= $2::timestamp AND p.devicetime <= $3::timestamp`;
+            queryParams.push(startTimestamp, endTimestamp);
         }
 
-        queryText += ` ORDER BY p.devicetime DESC`;
-        if (!from || !to) queryText += ` LIMIT 100`;
+        queryText += ` ORDER BY p.devicetime ASC`; 
+        if (!from || !to) queryText += ` LIMIT 500`;
 
         const result = await traccarPool.query(queryText, queryParams);
 
@@ -92,7 +99,7 @@ const getTruckHistory = async (req, res) => {
             let activeZoneName = '';
 
             for (const zone of zones) {
-                if (isPointWithinRadius(point, { latitude: zone.latitude, longitude: zone.longitude }, zone.radius || 100)) {
+                if (isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
                     activeZoneName = zone.name;
                     break;
                 }
@@ -109,6 +116,7 @@ const getTruckHistory = async (req, res) => {
 
         res.status(200).json({ history: processedHistory, zones });
     } catch (err) {
+        console.error("Error in getTruckHistory:", err);
         res.status(500).json({ error: err.message });
     }
 };
