@@ -52,7 +52,6 @@ const processGpsData = async () => {
 
             const { latitude, longitude, speed, attributes, devicetime } = traccarRes.rows[0];
 
-            // Safe Attribute Parsing
             let sensorData = {};
             if (typeof attributes === 'string') {
                 try { sensorData = JSON.parse(attributes); } catch (e) { sensorData = {}; }
@@ -60,7 +59,6 @@ const processGpsData = async () => {
                 sensorData = attributes;
             }
 
-            // Telemetry & Geofence Logic
             const currentLat = parseFloat(latitude);
             const currentLng = parseFloat(longitude);
             const currentSpeed = parseFloat((speed * 1.852).toFixed(1));
