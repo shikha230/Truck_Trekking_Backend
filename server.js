@@ -27,7 +27,7 @@ require('./src/workers/gpsWorker');
 require('./src/workers/tripStateMachineWorker'); // <--- Nayi file attach ho gayi
 runGeofenceCheck();
 runGeofenceCheck();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8082;
 server.listen(PORT, async () => {
     console.log(`Server running on port ${PORT}`);
 

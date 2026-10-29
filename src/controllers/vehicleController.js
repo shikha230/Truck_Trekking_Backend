@@ -31,13 +31,13 @@ const getLiveVehicles = async (req, res) => {
         const unloadingCenter = unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null;
 
         const finalData = ourVehicles.rows.map(v => {
-            // Number comparison to avoid type mismatch (String vs Number)
             const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
             
             let distToLoading = 'N/A';
             let distToUnloading = 'N/A';
             let ignition = false;
             let bodyStatus = 'Down';
+            let batteryFuelVal = 87; // Default fallback percentage
 
             if (gps) {
                 let attrs = {};
@@ -55,6 +55,15 @@ const getLiveVehicles = async (req, res) => {
                     bodyStatus = 'Down';
                 }
 
+                // 🔋 Extracting Battery or Fuel from Traccar attributes
+                if (attrs.batteryLevel !== undefined) {
+                    batteryFuelVal = attrs.batteryLevel;
+                } else if (attrs.battery !== undefined) {
+                    batteryFuelVal = attrs.battery;
+                } else if (attrs.fuel !== undefined) {
+                    batteryFuelVal = attrs.fuel;
+                }
+
                 if (gps.latitude && gps.longitude) {
                     if (loadingCenter) {
                         const m = calculateDistance(gps.latitude, gps.longitude, loadingCenter.latitude, loadingCenter.longitude);
@@ -67,10 +76,6 @@ const getLiveVehicles = async (req, res) => {
                 }
             }
 
-            // Stronger IMEI mapping logic:
-            // 1. local vehicles table imei
-            // 2. traccar uniqueid
-            // 3. fallback to traccar_id string
             const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
 
             return {
@@ -81,6 +86,7 @@ const getLiveVehicles = async (req, res) => {
                 speed: gps ? gps.speed : 0,
                 ignition: ignition,
                 bodyStatus: bodyStatus,
+                batteryFuel: batteryFuelVal, // <-- Ab yeh real/dynamic data bheja jayega
                 distToLoading,
                 distToUnloading
             };

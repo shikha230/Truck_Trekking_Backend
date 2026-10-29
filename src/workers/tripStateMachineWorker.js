@@ -13,17 +13,16 @@ const parseAttributes = (rawAttributes) => {
 
 const runTripStateMachine = async () => {
     try {
-        // 1. Geofences map safely fetch karein
-        const geofencesRes = await traccarPool.query(`SELECT id, name FROM tc_geofences`);
-        const geofenceMap = {};
-        geofencesRes.rows.forEach(g => {
-            geofenceMap[g.id] = g.name;
-        });
+        // 1. Local geofences fetch karein (latitude, longitude, radius)
+        const geofencesRes = await pool.query(`SELECT id, name, latitude, longitude, radius FROM geofences`);
+        const zones = geofencesRes.rows;
 
-        // 2. Traccar positions without broken SQL ANY() Join
+        if (zones.length === 0) return;
+
+        // 2. Latest position har device ki fetch karein
         const latestPositions = await traccarPool.query(`
             SELECT DISTINCT ON (deviceid) 
-                deviceid, devicetime, latitude, longitude, speed, attributes, geofenceids
+                deviceid, devicetime, latitude, longitude, speed 
             FROM tc_positions
             ORDER BY deviceid, devicetime DESC
         `);
@@ -31,62 +30,69 @@ const runTripStateMachine = async () => {
         for (const pos of latestPositions.rows) {
             const deviceId = pos.deviceid;
             const devTime = new Date(pos.devicetime);
-            const attributes = parseAttributes(pos.attributes);
+            const point = { latitude: pos.latitude, longitude: pos.longitude };
 
-            // Dynamic Geofence resolution in JS
-            let activeZone = '';
-            if (pos.geofenceids) {
-                let gIds = pos.geofenceids;
-                if (typeof gIds === 'string') {
-                    gIds = gIds.split(',').map(id => id.trim());
-                } else if (!Array.isArray(gIds)) {
-                    gIds = [gIds];
+            // 3. Geolib se check karein truck kis zone ke andar hai
+            let matchedZoneName = '';
+            for (const zone of zones) {
+                const radiusMeters = zone.radius || 100;
+                const isInside = isPointWithinRadius(
+                    point,
+                    { latitude: zone.latitude, longitude: zone.longitude },
+                    radiusMeters
+                );
+
+                if (isInside) {
+                    matchedZoneName = zone.name.toLowerCase();
+                    break;
                 }
-                const matchedNames = gIds.map(id => geofenceMap[id]).filter(Boolean);
-                activeZone = matchedNames.join(' ').toLowerCase();
             }
 
-            const isLoadingZone = activeZone.includes('loading');
-            const isUnloadingZone = activeZone.includes('unloading');
+            const isLoadingZone = matchedZoneName.includes('loading') || matchedZoneName.includes('mine');
+            const isUnloadingZone = matchedZoneName.includes('unloading') || matchedZoneName.includes('plant');
 
             if (!vehicleStates[deviceId]) {
-                vehicleStates[deviceId] = { state: 'IDLE', startTime: null, unloadingStartTime: null };
+                vehicleStates[deviceId] = { state: 'IDLE', startTime: null, unloadingStartTime: null, startLat: pos.latitude, startLng: pos.longitude };
             }
 
             const currentState = vehicleStates[deviceId];
 
-            // STEP 1: Entry into Loading Zone -> Trip Start
+            // State Machine Logic
             if ((currentState.state === 'IDLE' || currentState.state === 'IN_TRANSIT') && isLoadingZone) {
                 currentState.state = 'LOADING';
                 currentState.startTime = devTime;
-                console.log(`✅ [TRIP STARTED] Vehicle ${deviceId} entered ${activeZone}`);
-            }
-
-            // STEP 2: Exit Loading Zone -> In Transit
+                currentState.startLat = pos.latitude;
+                currentState.startLng = pos.longitude;
+                console.log(`✅ [TRIP STARTED] Vehicle ${deviceId} entered Loading Zone`);
+            } 
             else if (currentState.state === 'LOADING' && !isLoadingZone) {
                 currentState.state = 'IN_TRANSIT';
                 console.log(`🚚 [IN TRANSIT] Vehicle ${deviceId} left loading zone`);
-            }
-
-            // STEP 3: Entry into Unloading Zone -> Unloading Started
+            } 
             else if ((currentState.state === 'IN_TRANSIT' || currentState.state === 'LOADING') && isUnloadingZone) {
                 currentState.state = 'UNLOADING';
                 currentState.unloadingStartTime = devTime;
                 console.log(`🏗️ [UNLOADING] Vehicle ${deviceId} reached unloading zone`);
-            }
-
-            // STEP 4: Exit Unloading Zone -> Trip Completed
+            } 
             else if (currentState.state === 'UNLOADING' && !isUnloadingZone) {
                 const endTime = devTime;
                 const startTime = currentState.startTime || devTime;
                 const durationMinutes = Math.max(1, Math.round((endTime - startTime) / (1000 * 60)));
 
-                console.log(`🎉 [TRIP COMPLETED] Vehicle ${deviceId} finished cycle in ${durationMinutes} mins.`);
+                console.log(`🎉 [TRIP COMPLETED] Vehicle ${deviceId} completed in ${durationMinutes} mins.`);
 
                 await pool.query(`
                     INSERT INTO trips (vehicle_id, start_time, unloading_start_time, end_time, status, total_cycle_minutes, start_lat, start_lng)
                     VALUES ($1, $2, $3, $4, 'COMPLETED', $5, $6, $7)
-                `, [deviceId, startTime, currentState.unloadingStartTime || devTime, endTime, durationMinutes, pos.latitude, pos.longitude]);
+                `, [
+                    deviceId, 
+                    startTime, 
+                    currentState.unloadingStartTime || devTime, 
+                    endTime, 
+                    durationMinutes, 
+                    currentState.startLat, 
+                    currentState.startLng
+                ]);
 
                 if (global.io) {
                     global.io.emit('trip_completed', { deviceId, durationMinutes, completedAt: endTime });
@@ -96,7 +102,7 @@ const runTripStateMachine = async () => {
             }
         }
     } catch (err) {
-        console.error("❌ Error in Trip Worker:", err.message);
+        console.error("❌ Error in Trip State Machine Worker:", err.message);
     }
 };
 

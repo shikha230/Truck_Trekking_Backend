@@ -15,7 +15,9 @@ const getVehiclesList = async (req, res) => {
 const getRecentTrips = async (req, res) => {
     try {
         const { vehicleId, from, to, page = 1, limit = 10 } = req.query;
-        const offset = (parseInt(page) - 1) * parseInt(limit);
+        const pageNum = parseInt(page, 10) || 1;
+        const limitNum = parseInt(limit, 10) || 10;
+        const offset = (pageNum - 1) * limitNum;
         
         let queryText = `
             SELECT 
@@ -28,13 +30,13 @@ const getRecentTrips = async (req, res) => {
         const queryParams = [];
         let paramIndex = 1;
 
-        if (vehicleId && vehicleId !== 'all') {
-            queryText += ` AND t.vehicle_id::text = $${paramIndex}::text`;
-            queryParams.push(vehicleId);
-            paramIndex++;
-        }
+      if (vehicleId && vehicleId !== 'all') {
+    queryText += ` AND (t.vehicle_id::text = $${paramIndex}::text OR v.traccar_id::text = $${paramIndex}::text)`;
+    queryParams.push(vehicleId);
+    paramIndex++;
+}
 
-        // DateTime Filters (Independent & Combined)
+        // DateTime Filters
         if (from && !to) {
             queryText += ` AND t.start_time >= $${paramIndex}::timestamp`;
             queryParams.push(from);
@@ -46,51 +48,78 @@ const getRecentTrips = async (req, res) => {
             paramIndex++;
         }
         else if (from && to) {
-            queryText += ` AND t.start_time >= $${paramIndex}::timestamp AND t.start_time <= $${paramIndex+1}::timestamp`;
+            queryText += ` AND t.start_time >= $${paramIndex}::timestamp AND t.start_time <= $${paramIndex + 1}::timestamp`;
             queryParams.push(from, to);
             paramIndex += 2;
         }
 
         queryText += ` ORDER BY t.start_time DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-        queryParams.push(parseInt(limit), offset);
+        queryParams.push(limitNum, offset);
 
         const result = await pool.query(queryText, queryParams);
+        
+        console.log(`📤 Sending ${result.rows.length} trips to frontend for vehicleId: ${vehicleId || 'All'}`);
         res.status(200).json(result.rows);
     } catch (err) {
+        console.error("❌ Trips API Error:", err.message);
         res.status(500).json({ error: err.message });
     }
-};const getTruckHistory = async (req, res) => {
+};
+
+module.exports = { getRecentTrips };
+const getTruckHistory = async (req, res) => {
     const { deviceId } = req.params;
     let { from, to, fromTime, toTime } = req.query;
 
     try {
-        // Fetch local geofences
+        // 1. Fetch local geofences
         const zonesRes = await pool.query("SELECT * FROM geofences");
         const zones = zonesRes.rows;
 
-        // Default time formatting if not provided (matches frontend values)
-        const startTimeStr = fromTime ? (fromTime.length === 5 ? `${fromTime}:00` : fromTime) : '00:00:00';
-        const endTimeStr = toTime ? (toTime.length === 5 ? `${toTime}:59` : toTime) : '23:59:59';
-
+        // Base Query joining tc_positions and vehicles
         let queryText = `
-            SELECT p.devicetime, p.latitude, p.longitude, p.speed, p.attributes
+            SELECT p.devicetime, p.latitude, p.longitude, p.speed, p.attributes, p.deviceid, v.name as vehicle_name
             FROM tc_positions p 
-            WHERE p.deviceid = $1
+            LEFT JOIN vehicles v ON p.deviceid = v.traccar_id
         `;
-        const queryParams = [deviceId];
+        const queryParams = [];
 
+        // 2. Dynamic Vehicle Filter ('all' vs specific deviceId)
+        if (deviceId && deviceId !== 'all') {
+            queryParams.push(Number(deviceId));
+            queryText += ` WHERE p.deviceid = $1`;
+        }
+
+        // 3. Date Range Handling (Fixed Duplicate String issue)
         if (from && to) {
-            const startTimestamp = `${from} ${startTimeStr}`;
-            const endTimestamp = `${to} ${endTimeStr}`;
+            let startTimestamp = String(from).trim().replace('T', ' ');
+            let endTimestamp = String(to).trim().replace('T', ' ');
 
-            queryText += ` AND p.devicetime >= $2::timestamp AND p.devicetime <= $3::timestamp`;
+            if (startTimestamp.length === 10) {
+                const startTimeStr = fromTime ? (fromTime.length === 5 ? `${fromTime}:00` : fromTime) : '00:00:00';
+                startTimestamp = `${startTimestamp} ${startTimeStr}`;
+            }
+
+            if (endTimestamp.length === 10) {
+                const endTimeStr = toTime ? (toTime.length === 5 ? `${toTime}:59` : toTime) : '23:59:59';
+                endTimestamp = `${endTimestamp} ${endTimeStr}`;
+            }
+
+            const hasWhere = queryText.includes('WHERE');
+            queryText += hasWhere ? ` AND ` : ` WHERE `;
+
+            // IST to UTC time offset adjustment for Traccar database
+            queryText += `p.devicetime >= ($${queryParams.length + 1}::timestamp - INTERVAL '5 hours 30 minutes') AND p.devicetime <= ($${queryParams.length + 2}::timestamp - INTERVAL '5 hours 30 minutes')`;
             queryParams.push(startTimestamp, endTimestamp);
         }
 
-        queryText += ` ORDER BY p.devicetime ASC`; 
-        if (!from || !to) queryText += ` LIMIT 500`;
+        queryText += ` ORDER BY p.devicetime DESC LIMIT 100`; 
+
+        console.log("🔍 Executing History Query:", queryText);
+        console.log("📦 Query Params:", queryParams);
 
         const result = await traccarPool.query(queryText, queryParams);
+        console.log(`✅ Rows fetched from DB: ${result.rows.length}`);
 
         const processedHistory = result.rows.map(row => {
             const attributes = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {});
@@ -99,7 +128,7 @@ const getRecentTrips = async (req, res) => {
             let activeZoneName = '';
 
             for (const zone of zones) {
-                if (isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
+                if (typeof isPointWithinRadius === 'function' && isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
                     activeZoneName = zone.name;
                     break;
                 }
@@ -116,7 +145,7 @@ const getRecentTrips = async (req, res) => {
 
         res.status(200).json({ history: processedHistory, zones });
     } catch (err) {
-        console.error("Error in getTruckHistory:", err);
+        console.error("❌ Error in getTruckHistory:", err.message);
         res.status(500).json({ error: err.message });
     }
 };
