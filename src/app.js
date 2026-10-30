@@ -22,7 +22,7 @@ app.use('/api/geofences', geofenceRoutes);
 app.use('/api/trips', tripRoutes); 
 app.use('/api/auth', authRoutes); 
 app.use('/api/users', userRoutes);
-app.get('/traccer/download_csv', async (req, res) => {
+app.get('/api/download_csv', async (req, res) => {
     try {
       const query = `
             SELECT 
