@@ -6,26 +6,22 @@ const { syncDynamicTripsFromTraccar } = require('./src/services/dynamicTripScann
 const { pool } = require('./src/config/db');
 const server = http.createServer(app);
 
-// Socket.io setup for Real-time communication
 const io = new Server(server, {
     cors: {
-              origin: ["https://usptrack.tech", "http://localhost:5173", "http://localhost:3000"], // Yahan apna production domain add karein
-
+        origin: ["https://usptrack.tech", "http://localhost:5173", "http://localhost:3000"], // Yahan apna production domain add karein
         methods: ["GET", "POST"]
     }
 });
 
-// Global variable taaki hum worker se frontend ko message bhej saken
 global.io = io;
 
 io.on('connection', (socket) => {
-    console.log('🌐 A client connected for live tracking');
+    console.log('A client connected for live tracking');
     socket.on('disconnect', () => console.log('❌ Client disconnected'));
 });
 
-// Background GPS Worker Shuru Karein
 require('./src/workers/gpsWorker');
-require('./src/workers/tripStateMachineWorker'); // <--- Nayi file attach ho gayi
+require('./src/workers/tripStateMachineWorker'); 
 runGeofenceCheck();
 runGeofenceCheck();
 const PORT = process.env.PORT || 8082;
