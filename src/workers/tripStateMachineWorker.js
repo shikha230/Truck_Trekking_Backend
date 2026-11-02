@@ -1,3 +1,4 @@
+const { isPointWithinRadius } = require('geolib');
 const { pool, traccarPool } = require('../config/db');
 
 // In-Memory state management for live background worker

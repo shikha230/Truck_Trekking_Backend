@@ -1,14 +1,22 @@
 const { pool } = require('../config/db');
 const nodemailer = require('nodemailer');
+const bcrypt = require('bcrypt');
 
 // 1. Create User
 const createUser = async (req, res) => {
     try {
         const { name, email, role, password } = req.body;
         
+        // Agar password na ho toh check lagayein
+        if (!password) {
+            return res.status(400).json({ success: false, error: 'Password is required.' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
         const result = await pool.query(
             'INSERT INTO users (name, email, role, password, is_active) VALUES ($1, $2, $3, $4, true) RETURNING id, name, email, role, is_active, created_at',
-            [name, email, role, password]
+            [name, email, role, hashedPassword]
         );
 
         res.status(201).json({ 
@@ -65,9 +73,18 @@ const getUsersWithPagination = async (req, res) => {
 };
 
 // 3. Send Credentials Email (English Messages & Cleaned App Password)
+// 3. Send Credentials Email (English Messages & Cleaned App Password)
 const sendCredentialsEmail = async (req, res) => {
     try {
-        const { email, name, password } = req.body;
+        const { recipientEmail, userEmail, name, password } = req.body;
+
+        // Fallback agar koi purana request format ho
+        const targetEmail = recipientEmail || userEmail;
+        const displayEmail = userEmail || recipientEmail;
+
+        if (!targetEmail || !name || !password) {
+            return res.status(400).json({ success: false, error: 'All fields are required.' });
+        }
 
         const transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
@@ -75,15 +92,15 @@ const sendCredentialsEmail = async (req, res) => {
             secure: false,
             auth: {
                 user: process.env.MAIL_USER || "shikhajatav23march@gmail.com",
-                pass: process.env.MAIL_PASS || "wedpymeeopbjyfpf", // Spaces removed!
+                pass: process.env.MAIL_PASS || "wedpymeeopbjyfpf",
             },
         });
 
         const mailOptions = {
             from: process.env.MAIL_USER || "shikhajatav23march@gmail.com",
-            to: email,
+            to: targetEmail, // Jiss ID par mail deliver karni hai (Popup wali email)
             subject: 'Your Login Credentials - Truck-Trak',
-            text: `Hello ${name},\n\nYour account has been successfully created.\nEmail: ${email}\nPassword: ${password}\n\nYou can now log in to the system.`,
+            text: `Hello ${name},\n\nYour account has been successfully created.\nEmail: ${displayEmail}\nPassword: ${password}\n\nYou can now log in to the system.`, // Yahan user ki asli database wali email print hogi
         };
 
         await transporter.sendMail(mailOptions);
@@ -94,7 +111,6 @@ const sendCredentialsEmail = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
-
 // 4. Toggle User Status (Activate / Deactivate)
 const toggleUserStatus = async (req, res) => {
     try {
