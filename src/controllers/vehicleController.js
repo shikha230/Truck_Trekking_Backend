@@ -12,24 +12,17 @@ const getLiveVehicles = async (req, res) => {
 
         if (ourVehicles.rows.length === 0) return res.json([]);
         const ids = ourVehicles.rows.map(v => v.traccar_id);
-
-        // Fetch Traccar devices & positions
         const traccarData = await traccarPool.query(`
             SELECT d.id as traccar_id, d.uniqueid as traccar_imei, p.latitude, p.longitude, p.speed, p.address, p.attributes
             FROM tc_devices d
             LEFT JOIN tc_positions p ON p.id = d.positionid
             WHERE d.id = ANY($1)
         `, [ids]);
-
-        // Fetch Geofences directly from Traccar DB
         const geofences = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
-        
         const loadingGeofence = geofences.rows.find(g => g.name.toLowerCase().includes('loading'));
         const unloadingGeofence = geofences.rows.find(g => g.name.toLowerCase().includes('unloading'));
-
         const loadingCenter = loadingGeofence ? getGeofenceCenter(loadingGeofence.area) : null;
         const unloadingCenter = unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null;
-
         const finalData = ourVehicles.rows.map(v => {
             const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
             
@@ -37,10 +30,11 @@ const getLiveVehicles = async (req, res) => {
             let distToUnloading = 'N/A';
             let ignition = false;
             let bodyStatus = 'Down';
-            let batteryFuelVal = 87; // Default fallback percentage
+            let batteryFuelVal = 87;
+            let io9Val = 0;
+            let attrs = {}; // 👈 Declared here properly
 
             if (gps) {
-                let attrs = {};
                 try {
                     attrs = typeof gps.attributes === 'string' ? JSON.parse(gps.attributes) : (gps.attributes || {});
                 } catch (e) {
@@ -55,7 +49,12 @@ const getLiveVehicles = async (req, res) => {
                     bodyStatus = 'Down';
                 }
 
-                // 🔋 Extracting Battery or Fuel from Traccar attributes
+                if (attrs.io9 !== undefined) {
+                    io9Val = Number(attrs.io9);
+                } else if (attrs.adc1 !== undefined) {
+                    io9Val = Number(attrs.adc1);
+                }
+
                 if (attrs.batteryLevel !== undefined) {
                     batteryFuelVal = attrs.batteryLevel;
                 } else if (attrs.battery !== undefined) {
@@ -84,9 +83,11 @@ const getLiveVehicles = async (req, res) => {
                 latitude: gps ? gps.latitude : null,
                 longitude: gps ? gps.longitude : null,
                 speed: gps ? gps.speed : 0,
+                address: gps ? gps.address : 'Location updating...',
                 ignition: ignition,
                 bodyStatus: bodyStatus,
-                batteryFuel: batteryFuelVal, // <-- Ab yeh real/dynamic data bheja jayega
+                io9: io9Val,
+                batteryFuel: batteryFuelVal,
                 distToLoading,
                 distToUnloading
             };
@@ -143,7 +144,7 @@ const getAllVehicles = async (req, res) => {
 // 3. Register New Vehicle
 const registerVehicle = async (req, res) => {
     const { name, traccar_id, type, imei } = req.body;
-    
+
     if (!name || !traccar_id || !type) {
         return res.status(400).json({ error: "Name, Traccar ID, and Type are required" });
     }
@@ -193,7 +194,7 @@ const deleteVehicle = async (req, res) => {
     try {
         // Optional: cleanup associated vehicle status
         await pool.query(
-            "DELETE FROM vehicle_status WHERE vehicle_id IN (SELECT traccar_id FROM vehicles WHERE id = $1)", 
+            "DELETE FROM vehicle_status WHERE vehicle_id IN (SELECT traccar_id FROM vehicles WHERE id = $1)",
             [id]
         );
 
@@ -210,10 +211,10 @@ const deleteVehicle = async (req, res) => {
     }
 };
 
-module.exports = { 
-    getLiveVehicles, 
-    getAllVehicles, 
-    registerVehicle, 
-    updateVehicle, 
-    deleteVehicle 
+module.exports = {
+    getLiveVehicles,
+    getAllVehicles,
+    registerVehicle,
+    updateVehicle,
+    deleteVehicle
 };
