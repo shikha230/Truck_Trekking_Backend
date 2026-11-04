@@ -174,7 +174,6 @@ app.get('/api/download_csv', async (req, res) => {
 //     }
 // });
 
-
 app.get('/api/download_custom_csv', async (req, res) => {
     try {
         let { deviceId, startDate, endDate } = req.query;
@@ -196,8 +195,8 @@ app.get('/api/download_custom_csv', async (req, res) => {
                 p.speed, 
                 p.course, 
                 p.address, 
-                (p.attributes::jsonb)->>'sat' AS satellites, 
-                (p.attributes::jsonb)->>'ignition' AS ignition, 
+                COALESCE((p.attributes::jsonb)->>'sat', (p.attributes::jsonb)->>'SAT') AS satellites, 
+                COALESCE((p.attributes::jsonb)->>'ignition', (p.attributes::jsonb)->>'Ignition') AS ignition, 
                 (p.attributes::jsonb)->>'motion' AS motion, 
                 (p.attributes::jsonb)->>'power' AS power, 
                 (p.attributes::jsonb)->>'battery' AS battery, 
@@ -212,7 +211,14 @@ app.get('/api/download_custom_csv', async (req, res) => {
                 (p.attributes::jsonb)->>'operator' AS operator, 
                 (p.attributes::jsonb)->>'in1' AS input_1, 
                 (p.attributes::jsonb)->>'out1' AS output_1, 
-                (p.attributes::jsonb)->>'io9' AS io9, 
+                (p.attributes::jsonb)->>'io9' AS io9,
+                -- ⚡ Robust handling for io6 with case-insensitive fallback
+                COALESCE(
+                    (p.attributes::jsonb)->>'io6', 
+                    (p.attributes::jsonb)->>'IO6', 
+                    (p.attributes::jsonb)->>'Io6',
+                    ((p.attributes::jsonb)->'io6')::text
+                ) AS io6, 
                 (p.attributes::jsonb)->>'io69' AS io69, 
                 (p.attributes::jsonb)->>'io68' AS io68, 
                 (p.attributes::jsonb)->>'io113' AS io113
@@ -264,7 +270,6 @@ app.get('/api/download_custom_csv', async (req, res) => {
         return res.status(500).send('Error generating filtered CSV');
     }
 });
-
 app.get('/api/historical_playback', async (traccarPool, req, res) => {
     try {
         let { deviceId, startDate, endDate } = req.query;
