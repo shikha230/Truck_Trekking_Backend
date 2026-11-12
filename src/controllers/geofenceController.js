@@ -21,7 +21,7 @@ exports.getAllGeofences = async (req, res) => {
                 id: g.id,
                 name: g.name,
                 type: geofenceType,
-                coordinates: coordinates, // Sends real polygon boundary points to frontend
+                coordinates: coordinates, 
                 latitude: center ? center.latitude : null,
                 longitude: center ? center.longitude : null
             };

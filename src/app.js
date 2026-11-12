@@ -22,15 +22,18 @@ app.use('/api/geofences', geofenceRoutes);
 app.use('/api/trips', tripRoutes); 
 app.use('/api/auth', authRoutes); 
 app.use('/api/users', userRoutes);
-app.get('/api/download_csv', async (req, res) => {
+app.get('/api/download_custom_csv', async (req, res) => {
     try {
-        const query = `
+        let { deviceId, startDate, endDate } = req.query;
+
+        console.log("📥 Clean Query Params -> Device:", deviceId, "| Start:", startDate, "| End:", endDate);
+
+        let query = `
             SELECT 
                 p.id, 
                 d.name AS device_name, 
                 d.uniqueid AS device_imei, 
                 p.protocol, 
-                -- 🕒 Clean 12-Hour AM/PM Format with IST Conversion (+5:30)
                 TO_CHAR((p.servertime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS servertime, 
                 TO_CHAR((p.devicetime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS devicetime, 
                 TO_CHAR((p.fixtime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS fixtime, 
@@ -41,8 +44,8 @@ app.get('/api/download_csv', async (req, res) => {
                 p.speed, 
                 p.course, 
                 p.address, 
-                (p.attributes::jsonb)->>'sat' AS satellites, 
-                (p.attributes::jsonb)->>'ignition' AS ignition, 
+                COALESCE((p.attributes::jsonb)->>'sat', (p.attributes::jsonb)->>'SAT') AS satellites, 
+                COALESCE((p.attributes::jsonb)->>'ignition', (p.attributes::jsonb)->>'Ignition') AS ignition, 
                 (p.attributes::jsonb)->>'motion' AS motion, 
                 (p.attributes::jsonb)->>'power' AS power, 
                 (p.attributes::jsonb)->>'battery' AS battery, 
@@ -57,19 +60,50 @@ app.get('/api/download_csv', async (req, res) => {
                 (p.attributes::jsonb)->>'operator' AS operator, 
                 (p.attributes::jsonb)->>'in1' AS input_1, 
                 (p.attributes::jsonb)->>'out1' AS output_1, 
-                (p.attributes::jsonb)->>'io9' AS io9, 
+                (p.attributes::jsonb)->>'io9' AS io9,
+                COALESCE(
+                    (p.attributes::jsonb)->>'io6', 
+                    (p.attributes::jsonb)->>'IO6', 
+                    (p.attributes::jsonb)->>'Io6',
+                    ((p.attributes::jsonb)->'io6')::text
+                ) AS io6, 
                 (p.attributes::jsonb)->>'io69' AS io69, 
                 (p.attributes::jsonb)->>'io68' AS io68, 
                 (p.attributes::jsonb)->>'io113' AS io113
             FROM tc_positions p 
             JOIN tc_devices d ON p.deviceid = d.id 
-            WHERE p.servertime >= (NOW() - INTERVAL '24 hours') -- ⚡ Real-Time filter: Sirf pichle 24 ghante ka live data aayega
-            ORDER BY p.servertime DESC
-            LIMIT 5000;
+            WHERE 1=1
         `;
+
+        let queryParams = [];
+        let paramIndex = 1;
+
+        if (deviceId && deviceId !== 'all') {
+            query += ` AND d.id = $${paramIndex}`;
+            queryParams.push(deviceId);
+            paramIndex++;
+        }
+
+        // ⚡ Simple and direct comparison with IST converted database time
+        if (startDate && startDate !== 'undefined' && startDate.trim() !== '') {
+            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') >= $${paramIndex}::timestamp`;
+            queryParams.push(startDate.replace('T', ' '));
+            paramIndex++;
+        }
+
+        if (endDate && endDate !== 'undefined' && endDate.trim() !== '') {
+            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') <= $${paramIndex}::timestamp`;
+            queryParams.push(endDate.replace('T', ' '));
+            paramIndex++;
+        }
+
+        query += ` ORDER BY p.devicetime ASC LIMIT 20000;`;
+
+        const result = await traccarPool.query(query, queryParams);
         
-        const result = await pool.query(query);
-        if (result.rows.length === 0) return res.status(404).send('No real-time data found for the last 24 hours.');
+        if (result.rows.length === 0) {
+            return res.status(404).send('No data found for the selected date range.');
+        }
 
         const headers = Object.keys(result.rows[0]).join(',');
         const csvRows = result.rows.map(row => 
@@ -77,11 +111,12 @@ app.get('/api/download_csv', async (req, res) => {
         );
         
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', 'attachment; filename="traccar_realtime_report.csv"');
+        res.setHeader('Content-Disposition', 'attachment; filename="filtered_truck_report_exact.csv"');
         return res.status(200).send([headers, ...csvRows].join('\n'));
+
     } catch (err) {
-        console.error('CSV Export Error:', err);
-        return res.status(500).send('Error generating real-time CSV');
+        console.error('Custom CSV Export Error:', err);
+        return res.status(500).send('Error generating filtered CSV');
     }
 });
 // app.get('/api/download_custom_csv', async (req, res) => {
@@ -178,13 +213,14 @@ app.get('/api/download_custom_csv', async (req, res) => {
     try {
         let { deviceId, startDate, endDate } = req.query;
 
+        console.log("📥 Raw Query Params Received -> Device ID:", deviceId, "| Start:", startDate, "| End:", endDate);
+
         let query = `
             SELECT 
                 p.id, 
                 d.name AS device_name, 
                 d.uniqueid AS device_imei, 
                 p.protocol, 
-                -- 🕒 Forced text format with AM/PM and seconds so Excel doesn't hide them
                 TO_CHAR((p.servertime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS servertime, 
                 TO_CHAR((p.devicetime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS devicetime, 
                 TO_CHAR((p.fixtime + INTERVAL '5 hours 30 minutes'), 'YYYY-MM-DD HH12:MI:SS AM') AS fixtime, 
@@ -212,7 +248,6 @@ app.get('/api/download_custom_csv', async (req, res) => {
                 (p.attributes::jsonb)->>'in1' AS input_1, 
                 (p.attributes::jsonb)->>'out1' AS output_1, 
                 (p.attributes::jsonb)->>'io9' AS io9,
-                -- ⚡ Robust handling for io6 with case-insensitive fallback
                 COALESCE(
                     (p.attributes::jsonb)->>'io6', 
                     (p.attributes::jsonb)->>'IO6', 
@@ -236,24 +271,28 @@ app.get('/api/download_custom_csv', async (req, res) => {
             paramIndex++;
         }
 
-        if (startDate) {
-            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') >= $${paramIndex}`;
+        // 📅 Strict Date Filtering with format safety check
+        if (startDate && startDate !== 'undefined' && startDate.trim() !== '') {
+            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') >= $${paramIndex}::timestamp`;
             queryParams.push(startDate);
             paramIndex++;
         }
 
-        if (endDate) {
-            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') <= $${paramIndex}`;
+        if (endDate && endDate !== 'undefined' && endDate.trim() !== '') {
+            query += ` AND (p.devicetime + INTERVAL '5 hours 30 minutes') <= $${paramIndex}::timestamp`;
             queryParams.push(endDate);
             paramIndex++;
         }
 
-        query += ` ORDER BY p.devicetime DESC LIMIT 10000;`;
+        query += ` ORDER BY p.devicetime ASC LIMIT 20000;`;
+
+        console.log("🛠️ Generated SQL Query:", query);
+        console.log("📦 Query Parameters Array:", queryParams);
 
         const result = await traccarPool.query(query, queryParams);
         
         if (result.rows.length === 0) {
-            return res.status(404).send('No data found for the selected filters.');
+            return res.status(404).send('No data found for the selected date range.');
         }
 
         const headers = Object.keys(result.rows[0]).join(',');
