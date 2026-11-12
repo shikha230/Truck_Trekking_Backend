@@ -22,25 +22,15 @@ const syncTraccarDevices = async () => {
     }
 };
 
-/**
- * Professional GPS Worker Loop
- */
 const processGpsData = async () => {
     try {
-        console.log("--- 🕵️‍♂️ GPS Monitoring Cycle Started ---");
-
-        // 0. Sabse pehle Traccar se naye Trucks Auto-Sync karein
         await syncTraccarDevices();
-
-        // 1. Fetch Updated Master Data
         const trucks = (await pool.query("SELECT * FROM vehicles WHERE type = 'truck'")).rows;
         const zones = (await pool.query("SELECT * FROM geofences")).rows;
 
         for (const truck of trucks) {
             const traccarId = parseInt(truck.traccar_id, 10);
             if (isNaN(traccarId)) continue;
-
-            // 2. Fetch Latest Position from Traccar DB
             const traccarRes = await traccarPool.query(`
                 SELECT p.latitude, p.longitude, p.speed, p.attributes, p.devicetime
                 FROM tc_positions p
@@ -65,8 +55,6 @@ const processGpsData = async () => {
             const ignition = Boolean(sensorData.ignition);
             const rawDistance = sensorData.totalDistance || sensorData.distance || 0;
             const odometer = parseFloat((rawDistance / 1000).toFixed(2));
-
-            // Status State Engine
             let newState = ignition ? (currentSpeed > 0.5 ? 'MOVING' : 'IDLE') : 'PARKED';
 
             let currentZone = zones.find(z => 
@@ -83,7 +71,6 @@ const processGpsData = async () => {
                 }
             }
 
-            // Update Status in DB
             await pool.query(`
                 INSERT INTO vehicle_status (vehicle_id, current_state, latitude, longitude, speed, last_update, ignition, odometer)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -91,7 +78,6 @@ const processGpsData = async () => {
                 current_state = $2, latitude = $3, longitude = $4, speed = $5, last_update = $6, ignition = $7, odometer = $8
             `, [traccarId, newState, currentLat, currentLng, currentSpeed, devicetime, ignition, odometer]);
 
-            // Socket Emit
             if (global.io) {
                 global.io.emit('v-update', {
                     traccar_id: traccarId,
