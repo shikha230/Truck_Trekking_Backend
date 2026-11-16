@@ -13,5 +13,6 @@ router.post('/', geofenceController.addGeofence);
 // 3. Delete a geofence
 // Path: DELETE /api/geofences/:id
 router.delete('/:id', geofenceController.deleteGeofence);
-
+router.get('/history', geofenceController.getGeofenceHistory);
+router.post('/restore/:historyId', geofenceController.restoreGeofence);
 module.exports = router;

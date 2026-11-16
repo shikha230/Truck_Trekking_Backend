@@ -9,34 +9,68 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
     return R * c;
 };
 
-const parseWKT = (wktArea) => {
-    if (!wktArea) return { coordinates: [], center: null };
-    const rawPoints = wktArea.match(/[\d.-]+/g);
-    if (!rawPoints || rawPoints.length < 2) return { coordinates: [], center: null };
+// distance.js (ya jahan parseWKT defined hai)
+const parseWKT = (wkt) => {
+    if (!wkt) return { coordinates: [], center: null };
 
-    const coordinates = [];
-    let sumLat = 0, sumLon = 0;
+    try {
+        const upperWkt = wkt.trim().toUpperCase();
 
-    for (let i = 0; i < rawPoints.length; i += 2) {
-        let val1 = parseFloat(rawPoints[i]);
-        let val2 = parseFloat(rawPoints[i + 1]);
+        // 1. Handle CIRCLE format: CIRCLE (lat lon, radius)
+        if (upperWkt.startsWith('CIRCLE')) {
+            const matches = wkt.match(/CIRCLE\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*,\s*([-\d.]+)\s*\)/i);
+            if (matches) {
+                const lat = parseFloat(matches[1]);
+                const lon = parseFloat(matches[2]);
+                const radius = parseFloat(matches[3]);
+                
+                // Return center and a rough bounding polygon/coordinates if needed
+                return {
+                    coordinates: [],
+                    center: { latitude: lat, longitude: lon },
+                    radius: radius,
+                    shape: 'circle'
+                };
+            }
+        }
 
-        if (isNaN(val1) || isNaN(val2)) continue;
+        // 2. Handle POLYGON format: POLYGON ((lat lon, lat lon, ...))
+        if (upperWkt.startsWith('POLYGON')) {
+            const coordsString = wkt.substring(wkt.indexOf('((') + 2, wkt.lastIndexOf('))'));
+            const pairs = coordsString.split(',');
+            const coordinates = pairs.map(pair => {
+                const [lat, lon] = pair.trim().split(/\s+/).map(Number);
+                return [lat, lon];
+            });
 
-        // Auto-detect Latitude (~22) vs Longitude (~82)
-        let lat = val1 < val2 ? val1 : val2;
-        let lon = val1 < val2 ? val2 : val1;
+            // Calculate simple center for polygon
+            const total = coordinates.length;
+            const sumLat = coordinates.reduce((acc, curr) => acc + curr[0], 0);
+            const sumLon = coordinates.reduce((acc, curr) => acc + curr[1], 0);
+            const center = total > 0 ? { latitude: sumLat / total, longitude: sumLon / total } : null;
 
-        coordinates.push([lat, lon]);
-        sumLat += lat;
-        sumLon += lon;
+            return { coordinates, center, shape: 'polygon' };
+        }
+
+        // 3. Handle LINESTRING format
+        if (upperWkt.startsWith('LINESTRING')) {
+            const coordsString = wkt.substring(wkt.indexOf('(') + 1, wkt.lastIndexOf(')'));
+            const pairs = coordsString.split(',');
+            const coordinates = pairs.map(pair => {
+                const [lat, lon] = pair.trim().split(/\s+/).map(Number);
+                return [lat, lon];
+            });
+            const center = coordinates.length > 0 ? { latitude: coordinates[0][0], longitude: coordinates[0][1] } : null;
+
+            return { coordinates, center, shape: 'linestring' };
+        }
+    } catch (e) {
+        console.error("❌ Error parsing WKT:", e.message);
     }
 
-    const count = coordinates.length;
-    const center = count > 0 ? { latitude: sumLat / count, longitude: sumLon / count } : null;
-
-    return { coordinates, center };
+    return { coordinates: [], center: null };
 };
+
 
 const getGeofenceCenter = (wktArea) => {
     const { center } = parseWKT(wktArea);

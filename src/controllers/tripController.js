@@ -67,53 +67,123 @@ const getRecentTrips = async (req, res) => {
 };
 
 module.exports = { getRecentTrips };
+// const getTruckHistory = async (req, res) => {
+//     const { deviceId } = req.params;
+//     let { from, to, fromTime, toTime } = req.query;
+
+//     try {
+//         // 1. Fetch local geofences
+//         const zonesRes = await pool.query("SELECT * FROM geofences");
+//         const zones = zonesRes.rows;
+
+//         // Base Query joining tc_positions and vehicles
+//         let queryText = `
+//             SELECT p.devicetime, p.latitude, p.longitude, p.speed, p.attributes, p.deviceid, v.name as vehicle_name
+//             FROM tc_positions p 
+//             LEFT JOIN vehicles v ON p.deviceid = v.traccar_id
+//         `;
+//         const queryParams = [];
+
+//         // 2. Dynamic Vehicle Filter ('all' vs specific deviceId)
+//         if (deviceId && deviceId !== 'all') {
+//             queryParams.push(Number(deviceId));
+//             queryText += ` WHERE p.deviceid = $1`;
+//         }
+
+//         // 3. Date Range Handling (Fixed Duplicate String issue)
+//         if (from && to) {
+//             let startTimestamp = String(from).trim().replace('T', ' ');
+//             let endTimestamp = String(to).trim().replace('T', ' ');
+
+//             if (startTimestamp.length === 10) {
+//                 const startTimeStr = fromTime ? (fromTime.length === 5 ? `${fromTime}:00` : fromTime) : '00:00:00';
+//                 startTimestamp = `${startTimestamp} ${startTimeStr}`;
+//             }
+
+//             if (endTimestamp.length === 10) {
+//                 const endTimeStr = toTime ? (toTime.length === 5 ? `${toTime}:59` : toTime) : '23:59:59';
+//                 endTimestamp = `${endTimestamp} ${endTimeStr}`;
+//             }
+
+//             const hasWhere = queryText.includes('WHERE');
+//             queryText += hasWhere ? ` AND ` : ` WHERE `;
+
+//             // IST to UTC time offset adjustment for Traccar database
+//             queryText += `p.devicetime >= ($${queryParams.length + 1}::timestamp - INTERVAL '5 hours 30 minutes') AND p.devicetime <= ($${queryParams.length + 2}::timestamp - INTERVAL '5 hours 30 minutes')`;
+//             queryParams.push(startTimestamp, endTimestamp);
+//         }
+
+//         queryText += ` ORDER BY p.devicetime DESC LIMIT 100`; 
+
+//         console.log("🔍 Executing History Query:", queryText);
+//         console.log("📦 Query Params:", queryParams);
+
+//         const result = await traccarPool.query(queryText, queryParams);
+//         console.log(`✅ Rows fetched from DB: ${result.rows.length}`);
+
+//         const processedHistory = result.rows.map(row => {
+//             const attributes = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {});
+//             const speedKmh = Math.round((row.speed || 0) * 1.852);
+//             const point = { latitude: row.latitude, longitude: row.longitude };
+//             let activeZoneName = '';
+
+//             for (const zone of zones) {
+//                 if (typeof isPointWithinRadius === 'function' && isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
+//                     activeZoneName = zone.name;
+//                     break;
+//                 }
+//             }
+
+//             return {
+//                 ...row,
+//                 speed_kmh: speedKmh,
+//                 geofence_name: activeZoneName || null,
+//                 location: activeZoneName || 'On Road / In Transit',
+//                 status: speedKmh > 2 ? 'IN_TRANSIT' : (activeZoneName ? 'LOADING/UNLOADING' : 'STOPPED')
+//             };
+//         });
+
+//         res.status(200).json({ history: processedHistory, zones });
+//     } catch (err) {
+//         console.error("❌ Error in getTruckHistory:", err.message);
+//         res.status(500).json({ error: err.message });
+//     }
+// };
+
+
 const getTruckHistory = async (req, res) => {
     const { deviceId } = req.params;
-    let { from, to, fromTime, toTime } = req.query;
+    let { startDate, endDate } = req.query;
 
     try {
-        // 1. Fetch local geofences
         const zonesRes = await pool.query("SELECT * FROM geofences");
         const zones = zonesRes.rows;
 
-        // Base Query joining tc_positions and vehicles
         let queryText = `
-            SELECT p.devicetime, p.latitude, p.longitude, p.speed, p.attributes, p.deviceid, v.name as vehicle_name
+            SELECT 
+                (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') as devicetime, 
+                p.latitude, p.longitude, p.speed, p.course, p.attributes, p.deviceid, v.name as vehicle_name
             FROM tc_positions p 
             LEFT JOIN vehicles v ON p.deviceid = v.traccar_id
         `;
         const queryParams = [];
 
-        // 2. Dynamic Vehicle Filter ('all' vs specific deviceId)
         if (deviceId && deviceId !== 'all') {
             queryParams.push(Number(deviceId));
             queryText += ` WHERE p.deviceid = $1`;
         }
 
-        // 3. Date Range Handling (Fixed Duplicate String issue)
-        if (from && to) {
-            let startTimestamp = String(from).trim().replace('T', ' ');
-            let endTimestamp = String(to).trim().replace('T', ' ');
-
-            if (startTimestamp.length === 10) {
-                const startTimeStr = fromTime ? (fromTime.length === 5 ? `${fromTime}:00` : fromTime) : '00:00:00';
-                startTimestamp = `${startTimestamp} ${startTimeStr}`;
-            }
-
-            if (endTimestamp.length === 10) {
-                const endTimeStr = toTime ? (toTime.length === 5 ? `${toTime}:59` : toTime) : '23:59:59';
-                endTimestamp = `${endTimestamp} ${endTimeStr}`;
-            }
-
+        if (startDate && endDate) {
             const hasWhere = queryText.includes('WHERE');
             queryText += hasWhere ? ` AND ` : ` WHERE `;
 
-            // IST to UTC time offset adjustment for Traccar database
-            queryText += `p.devicetime >= ($${queryParams.length + 1}::timestamp - INTERVAL '5 hours 30 minutes') AND p.devicetime <= ($${queryParams.length + 2}::timestamp - INTERVAL '5 hours 30 minutes')`;
-            queryParams.push(startTimestamp, endTimestamp);
+            // Yahan frontend ke IST input ko seedha match karenge kyunki p.devicetime ko bhi IST mein convert kar liya hai
+            queryText += `(p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') >= $${queryParams.length + 1}::timestamp 
+                          AND (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') <= $${queryParams.length + 2}::timestamp`;
+            queryParams.push(startDate, endDate);
         }
 
-        queryText += ` ORDER BY p.devicetime DESC LIMIT 100`; 
+        queryText += ` ORDER BY p.devicetime ASC LIMIT 500`; 
 
         console.log("🔍 Executing History Query:", queryText);
         console.log("📦 Query Params:", queryParams);
@@ -123,7 +193,9 @@ const getTruckHistory = async (req, res) => {
 
         const processedHistory = result.rows.map(row => {
             const attributes = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {});
-            const speedKmh = Math.round((row.speed || 0) * 1.852);
+            const rawSpeedKnots = Number(row.speed || 0);
+            const speedKmh = Math.round(rawSpeedKnots * 1.852);
+            
             const point = { latitude: row.latitude, longitude: row.longitude };
             let activeZoneName = '';
 
@@ -136,6 +208,8 @@ const getTruckHistory = async (req, res) => {
 
             return {
                 ...row,
+                attributes,
+                speed: rawSpeedKnots, 
                 speed_kmh: speedKmh,
                 geofence_name: activeZoneName || null,
                 location: activeZoneName || 'On Road / In Transit',
@@ -149,5 +223,4 @@ const getTruckHistory = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
-
 module.exports = { getRecentTrips, getTruckHistory, getVehiclesList };
