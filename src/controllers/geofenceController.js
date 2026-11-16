@@ -9,16 +9,7 @@ const TRACCAR_AUTH = {
     username: 'sachinpat68@gmail.com', // Apna Traccar login email
     password: 'And&kus26'       // Apna Traccar password
 };
-// geofenceController.js
-const { traccarPool } = require('../config/db');
-const { parseWKT } = require('../utils/distance');
-const axios = require('axios');
 
-const TRACCAR_API_URL = 'http://traccar-uksd.srv1882256.hstgr.cloud:8082/api/geofences';
-const TRACCAR_AUTH = {
-    username: 'sachinpat68@gmail.com',
-    password: 'And&kus26'
-};
 
 exports.getAllGeofences = async (req, res) => {
     try {
