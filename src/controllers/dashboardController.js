@@ -1,36 +1,38 @@
-const { pool } = require('../config/db');
+const { pool, traccarPool } = require('../config/db');
 
 const getDashboardStats = async (req, res) => {
     try {
-        // 1. Aaj ki total completed trips
-      const totalTrips = await pool.query(
-    "SELECT COUNT(*) FROM trips WHERE LOWER(status) = 'completed'"
-);
+        // 1. Total Vehicles
+        const totalVehiclesRes = await pool.query("SELECT COUNT(*) FROM vehicles");
+        const totalVehicles = parseInt(totalVehiclesRes.rows[0]?.count, 10) || 0;
 
-        // 2. Currently kitne trucks 'Ongoing' ya 'LOADING'/'IN_TRANSIT' trip par hain
-        const activeTrips = await pool.query(
-            "SELECT COUNT(*) FROM trips WHERE LOWER(status) IN ('ongoing', 'loading', 'in_transit', 'unloading')"
-        );
-
-        // 3. Total truck count
-        const totalVehicles = await pool.query("SELECT COUNT(*) FROM vehicles WHERE type = 'truck'");
-
-        // 4. Average cycle time for today's completed trips (in minutes)
-        const avgCycle = await pool.query(`
-            SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time))/60)::INT as avg_time 
-            FROM trips 
-            WHERE LOWER(status) = 'completed' AND DATE(start_time) = CURRENT_DATE
-        `);
+        // 2. Total Online Vehicles (recent position within last 10 mins or speed > 0 / motion)
+        let totalOnline = 0;
+        try {
+            const onlineRes = await traccarPool.query(`
+                SELECT COUNT(DISTINCT deviceid) AS online_count
+                FROM tc_positions
+                WHERE devicetime >= NOW() - INTERVAL '10 minutes'
+            `);
+            totalOnline = parseInt(onlineRes.rows[0]?.online_count, 10) || 0;
+        } catch (traccarErr) {
+            console.warn("⚠️ Traccar online query fallback:", traccarErr.message);
+            const fallbackRes = await pool.query(`
+                SELECT COUNT(*) AS online_count
+                FROM vehicles
+                WHERE LOWER(COALESCE(status, '')) IN ('online', 'active', 'moving', 'running')
+            `);
+            totalOnline = parseInt(fallbackRes.rows[0]?.online_count, 10) || 0;
+        }
 
         res.status(200).json({
-            todayTrips: parseInt(totalTrips.rows[0].count, 10) || 0,
-            activeOnTrip: parseInt(activeTrips.rows[0].count, 10) || 0,
-            totalTrucks: parseInt(totalVehicles.rows[0].count, 10) || 0,
-            avgCycleTime: (avgCycle.rows[0]?.avg_time || 0) + ' min'
+            totalVehicles,
+            totalOnline
         });
     } catch (err) {
         console.error("Dashboard Stats Error:", err);
         res.status(500).json({ error: err.message });
     }
 };
+
 module.exports = { getDashboardStats };

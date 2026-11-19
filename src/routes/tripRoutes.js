@@ -12,5 +12,4 @@ router.get('/generate/:deviceId', async (req, res) => {
     const result = await generateTripsFromHistory(deviceId);
     res.json(result);
 });
-
 module.exports = router;

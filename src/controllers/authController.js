@@ -115,10 +115,22 @@ const resetPasswordWithOTP = async (req, res) => {
     res.status(500).json({ message: 'Server error during password reset.' });
   }
 };
+
 const changePassword = async (req, res) => {
   const { email, oldPassword, newPassword } = req.body;
+  const cleanEmail = String(email || '').trim().toLowerCase();
+
   try {
-    const result = await pool.query('SELECT * FROM admins WHERE email = $1', [email]);
+    let result;
+    if (cleanEmail) {
+      result = await pool.query(
+        'SELECT * FROM admins WHERE LOWER(TRIM(email)) = $1',
+        [cleanEmail]
+      );
+    } else {
+      result = await pool.query('SELECT * FROM admins ORDER BY id ASC LIMIT 1');
+    }
+
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Admin not found.' });
     }
@@ -131,18 +143,17 @@ const changePassword = async (req, res) => {
     }
 
     // New password update karein
-    await pool.query('UPDATE admins SET password = $1 WHERE email = $2', [newPassword, email]);
+    await pool.query('UPDATE admins SET password = $1 WHERE id = $2', [newPassword, admin.id]);
 
-    res.status(200).json({ 
-      success: true, 
-      message: 'Password changed successfully.' 
+    res.status(200).json({
+      success: true,
+      message: 'Password changed successfully.'
     });
   } catch (err) {
     console.error('Change Password Error:', err);
     res.status(500).json({ success: false, message: 'Server error during password change.' });
   }
 };
-
 // User Login API
 const loginUser = async (req, res) => {
     try {
