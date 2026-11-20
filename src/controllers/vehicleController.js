@@ -29,6 +29,13 @@ const formatInput1 = (attrs = {}) => {
     return String(raw);
 };
 
+const extractIo6 = (attrs = {}) => {
+    const raw = attrs.io6 ?? attrs.io06 ?? attrs.adc3 ?? null;
+    if (raw === null || raw === undefined || raw === '') return 0;
+    const num = Number(raw);
+    return Number.isNaN(num) ? 0 : num;
+};
+
 const getLiveVehicles = async (req, res) => {
     try {
         const ourVehicles = await pool.query(`
@@ -65,6 +72,7 @@ const getLiveVehicles = async (req, res) => {
             let bodyStatus = 'Down';
             let voltageVal = null;
             let batteryFuelVal = 'N/A';
+            let io6Val = 0;
             let io9Val = 0;
             let input1Val = 'No';
             let attrs = {};
@@ -83,6 +91,8 @@ const getLiveVehicles = async (req, res) => {
                 } else {
                     bodyStatus = 'Down';
                 }
+
+                io6Val = extractIo6(attrs);
 
                 if (attrs.io9 !== undefined) {
                     io9Val = Number(attrs.io9);
@@ -126,6 +136,7 @@ const getLiveVehicles = async (req, res) => {
                 address: gps ? gps.address : 'Location updating...',
                 ignition,
                 bodyStatus,
+                io6: io6Val,
                 io9: io9Val,
                 input1: input1Val,
                 in1: input1Val,
