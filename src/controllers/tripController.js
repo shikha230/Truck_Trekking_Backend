@@ -237,7 +237,7 @@
 
 
 const { pool, traccarPool } = require('../config/db');
-const { isPointWithinRadius } = require('geolib');
+const { isPointInPolygon, isPointWithinRadius } = require('geolib');
 
 // 1. Get Vehicles List for Dropdown
 const getVehiclesList = async (req, res) => {
@@ -340,13 +340,118 @@ const getRecentTrips = async (req, res) => {
 };
 
 // 3. Truck History & Playback Controller
+// const getTruckHistory = async (req, res) => {
+//     const { deviceId } = req.params;
+//     let { startDate, endDate } = req.query;
+
+//     try {
+//         const zonesRes = await pool.query("SELECT * FROM geofences");
+//         const zones = zonesRes.rows;
+
+//         let queryText = `
+//             SELECT 
+//                 (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') as devicetime, 
+//                 p.latitude, p.longitude, p.speed, p.course, p.attributes, p.deviceid, v.name as vehicle_name
+//             FROM tc_positions p 
+//             LEFT JOIN vehicles v ON p.deviceid = v.traccar_id
+//         `;
+//         const queryParams = [];
+
+//         if (deviceId && deviceId !== 'all') {
+//             queryParams.push(Number(deviceId));
+//             queryText += ` WHERE p.deviceid = $1`;
+//         }
+
+//         if (startDate && endDate) {
+//             const hasWhere = queryText.includes('WHERE');
+//             queryText += hasWhere ? ` AND ` : ` WHERE `;
+//             queryText += `(p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') >= $${queryParams.length + 1}::timestamp 
+//                           AND (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') <= $${queryParams.length + 2}::timestamp`;
+//             queryParams.push(startDate, endDate);
+//         }
+
+//         queryText += ` ORDER BY p.devicetime ASC LIMIT 1000`; 
+
+//         const result = await traccarPool.query(queryText, queryParams);
+
+//         const processedHistory = result.rows.map(row => {
+//             const attributes = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {});
+//             const rawSpeedKnots = Number(row.speed || 0);
+//             const speedKmh = Math.round(rawSpeedKnots * 1.852);
+            
+//             const point = { latitude: row.latitude, longitude: row.longitude };
+//             let activeZoneName = '';
+
+//             for (const zone of zones) {
+//                 if (typeof isPointWithinRadius === 'function' && isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
+//                     activeZoneName = zone.name;
+//                     break;
+//                 }
+//             }
+
+//             return {
+//                 ...row,
+//                 attributes,
+//                 speed: rawSpeedKnots, 
+//                 speed_kmh: speedKmh,
+//                 geofence_name: activeZoneName || null,
+//                 location: activeZoneName || 'On Road / In Transit',
+//                 status: speedKmh > 2 ? 'IN_TRANSIT' : (activeZoneName ? 'LOADING/UNLOADING' : 'STOPPED')
+//             };
+//         });
+
+//         res.status(200).json({ history: processedHistory, zones });
+//     } catch (err) {
+//         console.error("❌ Error in getTruckHistory:", err.message);
+//         res.status(500).json({ error: err.message });
+//     }
+// };
+
+
+
+const toGeolibPolygon = (coordinates) => {
+    if (!Array.isArray(coordinates) || coordinates.length < 3) return null;
+    return coordinates.map(coord => ({
+        latitude: Array.isArray(coord) ? Number(coord[0]) : Number(coord.latitude),
+        longitude: Array.isArray(coord) ? Number(coord[1]) : Number(coord.longitude)
+    }));
+};
+
+// 3. Truck History & Playback Controller (Filtered strictly inside "GPS LIMITs")
 const getTruckHistory = async (req, res) => {
     const { deviceId } = req.params;
     let { startDate, endDate } = req.query;
 
     try {
+        // 1. Fetch local geofences for loading/unloading zone matching
         const zonesRes = await pool.query("SELECT * FROM geofences");
         const zones = zonesRes.rows;
+
+        // 2. Fetch "GPS LIMITs" master polygon from Traccar DB (tc_geofences)
+        let gpsLimitPolygon = null;
+        try {
+            const geoRes = await traccarPool.query("SELECT name, area FROM tc_geofences");
+            const gpsLimitRow = geoRes.rows.find(g =>
+                (g.name || '').toLowerCase().includes('gps limit')
+            );
+            if (gpsLimitRow && gpsLimitRow.area) {
+                const { coordinates } = parseWKT(gpsLimitRow.area);
+                gpsLimitPolygon = toGeolibPolygon(coordinates);
+            }
+        } catch (geoErr) {
+            console.warn("⚠️ Could not load GPS LIMITs polygon for history:", geoErr.message);
+        }
+
+        // 3. Fetch device names from Traccar as fallback if local vehicles table lacks a name
+        const traccarNameMap = {};
+        try {
+            const devRes = await traccarPool.query("SELECT id, name FROM tc_devices");
+            devRes.rows.forEach(d => {
+                traccarNameMap[String(d.id)] = d.name;
+            });
+        } catch (devErr) {
+            console.warn("⚠️ Could not fetch tc_devices names:", devErr.message);
+        }
 
         let queryText = `
             SELECT 
@@ -370,29 +475,61 @@ const getTruckHistory = async (req, res) => {
             queryParams.push(startDate, endDate);
         }
 
-        queryText += ` ORDER BY p.devicetime ASC LIMIT 1000`; 
+        queryText += ` ORDER BY p.devicetime ASC LIMIT 1000`;
 
         const result = await traccarPool.query(queryText, queryParams);
 
-        const processedHistory = result.rows.map(row => {
-            const attributes = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {});
+        // 4. Filter out any points outside "GPS LIMITs" before processing
+        const insideRows = result.rows.filter(row => {
+            const lat = Number(row.latitude);
+            const lng = Number(row.longitude);
+            if (!lat || !lng) return false;
+            if (!gpsLimitPolygon) return true;
+            return isPointInPolygon({ latitude: lat, longitude: lng }, gpsLimitPolygon);
+        });
+
+        const processedHistory = insideRows.map(row => {
+            let attributes = {};
+            try {
+                attributes = typeof row.attributes === 'string'
+                    ? JSON.parse(row.attributes)
+                    : (row.attributes || {});
+            } catch (e) {
+                attributes = {};
+            }
+
             const rawSpeedKnots = Number(row.speed || 0);
             const speedKmh = Math.round(rawSpeedKnots * 1.852);
-            
-            const point = { latitude: row.latitude, longitude: row.longitude };
+
+            const point = { latitude: Number(row.latitude), longitude: Number(row.longitude) };
             let activeZoneName = '';
 
             for (const zone of zones) {
-                if (typeof isPointWithinRadius === 'function' && isPointWithinRadius(point, { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) }, zone.radius || 150)) {
+                if ((zone.name || '').toLowerCase().includes('gps limit')) continue;
+
+                if (
+                    typeof isPointWithinRadius === 'function' &&
+                    zone.latitude != null &&
+                    zone.longitude != null &&
+                    isPointWithinRadius(
+                        point,
+                        { latitude: parseFloat(zone.latitude), longitude: parseFloat(zone.longitude) },
+                        zone.radius || 150
+                    )
+                ) {
                     activeZoneName = zone.name;
                     break;
                 }
             }
 
+            const resolvedVehicleName =
+                row.vehicle_name || traccarNameMap[String(row.deviceid)] || `Truck #${row.deviceid}`;
+
             return {
                 ...row,
+                vehicle_name: resolvedVehicleName,
                 attributes,
-                speed: rawSpeedKnots, 
+                speed: rawSpeedKnots,
                 speed_kmh: speedKmh,
                 geofence_name: activeZoneName || null,
                 location: activeZoneName || 'On Road / In Transit',

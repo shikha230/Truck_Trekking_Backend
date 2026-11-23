@@ -1,5 +1,6 @@
 const { isPointWithinRadius } = require('geolib');
 const { pool, traccarPool } = require('../config/db');
+const { parseWKT } = require('../utils/distance');
 
 // In-Memory state management for live background worker
 const vehicleStates = {};
