@@ -20,7 +20,9 @@ exports.getAllGeofences = async (req, res) => {
             const nameLower = (g.name || '').toLowerCase();
             
             let geofenceType = 'loading';
-            if (nameLower.includes('unloading')) {
+            if (nameLower.includes('gps limit')) {
+                geofenceType = 'boundary'; // Master outer limit
+            } else if (nameLower.includes('unloading')) {
                 geofenceType = 'unloading';
             } else if (nameLower.includes('loading')) {
                 geofenceType = 'loading';
