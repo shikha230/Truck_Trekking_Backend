@@ -22,7 +22,7 @@ io.on('connection', (socket) => {
 
 require('./src/workers/gpsWorker');
 require('./src/workers/tripStateMachineWorker'); 
-require('./src/workers/gpsLimitGuardWorker');
+// require('./src/workers/gpsLimitGuardWorker');
 runGeofenceCheck();
 runGeofenceCheck();
 const PORT = process.env.PORT || 8082;
