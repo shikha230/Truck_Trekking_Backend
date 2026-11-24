@@ -173,130 +173,321 @@ const isInsideGpsLimits = (lat, lng, geofenceRows) => {
 // };
 
 
-const getLiveVehicles = async (req, res) => {
-    try {
-        const ourVehicles = await pool.query(`
-            SELECT v.name, v.traccar_id, v.imei as vehicle_imei, s.current_state, s.last_update
-            FROM vehicles v
-            LEFT JOIN vehicle_status s ON v.traccar_id = s.vehicle_id
-            WHERE v.type = 'truck'
-        `);
+// const getLiveVehicles = async (req, res) => {
+//     try {
+//         const ourVehicles = await pool.query(`
+//             SELECT v.name, v.traccar_id, v.imei as vehicle_imei, s.current_state, s.last_update
+//             FROM vehicles v
+//             LEFT JOIN vehicle_status s ON v.traccar_id = s.vehicle_id
+//             WHERE v.type = 'truck'
+//         `);
 
-        if (ourVehicles.rows.length === 0) return res.json([]);
+//         if (ourVehicles.rows.length === 0) return res.json([]);
 
-        const ids = ourVehicles.rows.map(v => v.traccar_id);
-        const traccarData = await traccarPool.query(`
+//         const ids = ourVehicles.rows.map(v => v.traccar_id);
+//         const traccarData = await traccarPool.query(`
+//             SELECT d.id as traccar_id, d.uniqueid as traccar_imei, d.lastupdate as device_last_update,
+//                    p.latitude, p.longitude, p.speed, p.address, p.attributes
+//             FROM tc_devices d
+//             LEFT JOIN tc_positions p ON p.id = d.positionid
+//             WHERE d.id = ANY($1)
+//         `, [ids]);
+
+//         const geofences = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
+
+//         // Exclude "GPS LIMITs" when finding loading/unloading centers
+//         const loadingGeofence = geofences.rows.find(g => {
+//             const n = g.name.toLowerCase();
+//             return n.includes('loading') && !n.includes('unloading') && !n.includes('gps limit');
+//         });
+//         const unloadingGeofence = geofences.rows.find(g => g.name.toLowerCase().includes('unloading'));
+
+//         const loadingCenter = loadingGeofence ? getGeofenceCenter(loadingGeofence.area) : null;
+//         const unloadingCenter = unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null;
+
+//         const finalData = ourVehicles.rows
+//             .filter(v => {
+//                 const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
+//                 if (!gps || !gps.latitude || !gps.longitude) return false;
+                
+//                 // 🔑 Client Rule: Only include trucks currently inside "GPS LIMITs" boundary
+//                 return isInsideGpsLimits(gps.latitude, gps.longitude, geofences.rows);
+//             })
+//             .map(v => {
+//                 const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
+
+//                 let distToLoading = 'N/A';
+//                 let distToUnloading = 'N/A';
+//                 let ignition = false;
+//                 let bodyStatus = 'Down';
+//                 let voltageVal = null;
+//                 let batteryFuelVal = 'N/A';
+//                 let io6Val = 0;
+//                 let io9Val = 0;
+//                 let input1Val = 'No';
+//                 let attrs = {};
+
+//                 if (gps) {
+//                     try {
+//                         attrs = typeof gps.attributes === 'string' ? JSON.parse(gps.attributes) : (gps.attributes || {});
+//                     } catch (e) {
+//                         attrs = {};
+//                     }
+
+//                     ignition = attrs.ignition === true || attrs.ignition === 'true' || attrs.ignition === 1;
+
+//                     if (attrs.io68 === 1 || attrs.io68 === '1' || attrs.body === 'up' || attrs.tipping === true) {
+//                         bodyStatus = 'Up';
+//                     } else {
+//                         bodyStatus = 'Down';
+//                     }
+
+//                     io6Val = extractIo6(attrs);
+
+//                     if (attrs.io9 !== undefined) {
+//                         io9Val = Number(attrs.io9);
+//                     } else if (attrs.adc1 !== undefined) {
+//                         io9Val = Number(attrs.adc1);
+//                     }
+
+//                     input1Val = formatInput1(attrs);
+//                     voltageVal = extractVoltage(attrs);
+
+//                     if (voltageVal !== null) {
+//                         batteryFuelVal = `${voltageVal.toFixed(1)} V`;
+//                     } else if (attrs.batteryLevel !== undefined) {
+//                         batteryFuelVal = `${attrs.batteryLevel}%`;
+//                     } else if (attrs.fuel !== undefined) {
+//                         batteryFuelVal = `${attrs.fuel}%`;
+//                     }
+
+//                     if (gps.latitude && gps.longitude) {
+//                         if (loadingCenter) {
+//                             const m = calculateDistance(gps.latitude, gps.longitude, loadingCenter.latitude, loadingCenter.longitude);
+//                             distToLoading = (m / 1000).toFixed(2) + ' km';
+//                         }
+//                         if (unloadingCenter) {
+//                             const m = calculateDistance(gps.latitude, gps.longitude, unloadingCenter.latitude, unloadingCenter.longitude);
+//                             distToUnloading = (m / 1000).toFixed(2) + ' km';
+//                         }
+//                     }
+//                 }
+
+//                 const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
+//                 const lastUpdate = v.last_update || (gps ? gps.device_last_update : null);
+
+//                 return {
+//                     ...v,
+//                     imei: finalImei,
+//                     lastUpdate,
+//                     latitude: gps ? gps.latitude : null,
+//                     longitude: gps ? gps.longitude : null,
+//                     speed: gps ? Number(gps.speed || 0) : 0,
+//                     address: gps ? gps.address : 'Location updating...',
+//                     ignition,
+//                     bodyStatus,
+//                     io6: io6Val,
+//                     io9: io9Val,
+//                     input1: input1Val,
+//                     in1: input1Val,
+//                     voltage: voltageVal,
+//                     batteryFuel: batteryFuelVal,
+//                     distToLoading,
+//                     distToUnloading
+//                 };
+//             });
+
+//         res.status(200).json(finalData);
+//     } catch (err) {
+//         console.error("Error in getLiveVehicles:", err);
+//         res.status(500).json({ error: err.message });
+//     }
+// };
+
+const LIVE_CACHE_TTL_MS = 4000; // 4 seconds cache
+const GEOFENCE_CACHE_TTL_MS = 60000; // 60 seconds cache
+
+let liveCache = {
+    data: null,
+    expiresAt: 0,
+    inFlight: null,
+};
+
+let geofenceCache = {
+    rows: null,
+    loadingCenter: null,
+    unloadingCenter: null,
+    expiresAt: 0,
+};
+
+const getCachedGeofences = async () => {
+    const now = Date.now();
+    if (geofenceCache.rows && now < geofenceCache.expiresAt) {
+        return geofenceCache;
+    }
+
+    const geofences = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
+
+    const loadingGeofence = geofences.rows.find(g => {
+        const n = (g.name || '').toLowerCase();
+        return n.includes('loading') && !n.includes('unloading') && !n.includes('gps limit');
+    });
+    const unloadingGeofence = geofences.rows.find(g => (g.name || '').toLowerCase().includes('unloading'));
+
+    geofenceCache = {
+        rows: geofences.rows,
+        loadingCenter: loadingGeofence ? getGeofenceCenter(loadingGeofence.area) : null,
+        unloadingCenter: unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null,
+        expiresAt: now + GEOFENCE_CACHE_TTL_MS,
+    };
+
+    return geofenceCache;
+};
+
+const computeLiveVehicles = async () => {
+    const ourVehicles = await pool.query(`
+        SELECT v.name, v.traccar_id, v.imei as vehicle_imei, s.current_state, s.last_update
+        FROM vehicles v
+        LEFT JOIN vehicle_status s ON v.traccar_id = s.vehicle_id
+        WHERE v.type = 'truck'
+    `);
+
+    if (ourVehicles.rows.length === 0) return [];
+
+    const ids = ourVehicles.rows.map(v => v.traccar_id);
+
+    const [traccarData, gfCache] = await Promise.all([
+        traccarPool.query(`
             SELECT d.id as traccar_id, d.uniqueid as traccar_imei, d.lastupdate as device_last_update,
                    p.latitude, p.longitude, p.speed, p.address, p.attributes
             FROM tc_devices d
             LEFT JOIN tc_positions p ON p.id = d.positionid
             WHERE d.id = ANY($1)
-        `, [ids]);
+        `, [ids]),
+        getCachedGeofences(),
+    ]);
 
-        const geofences = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
+    const gpsMap = new Map();
+    for (const row of traccarData.rows) {
+        gpsMap.set(Number(row.traccar_id), row);
+    }
 
-        // Exclude "GPS LIMITs" when finding loading/unloading centers
-        const loadingGeofence = geofences.rows.find(g => {
-            const n = g.name.toLowerCase();
-            return n.includes('loading') && !n.includes('unloading') && !n.includes('gps limit');
-        });
-        const unloadingGeofence = geofences.rows.find(g => g.name.toLowerCase().includes('unloading'));
+    const { rows: geofenceRows, loadingCenter, unloadingCenter } = gfCache;
 
-        const loadingCenter = loadingGeofence ? getGeofenceCenter(loadingGeofence.area) : null;
-        const unloadingCenter = unloadingGeofence ? getGeofenceCenter(unloadingGeofence.area) : null;
+    return ourVehicles.rows
+        .filter(v => {
+            const gps = gpsMap.get(Number(v.traccar_id));
+            if (!gps || gps.latitude == null || gps.longitude == null) return false;
 
-        const finalData = ourVehicles.rows
-            .filter(v => {
-                const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
-                if (!gps || !gps.latitude || !gps.longitude) return false;
-                
-                // 🔑 Client Rule: Only include trucks currently inside "GPS LIMITs" boundary
-                return isInsideGpsLimits(gps.latitude, gps.longitude, geofences.rows);
-            })
-            .map(v => {
-                const gps = traccarData.rows.find(g => Number(g.traccar_id) === Number(v.traccar_id));
+            // Client Rule: Only include trucks currently inside "GPS LIMITs" boundary
+            return isInsideGpsLimits(gps.latitude, gps.longitude, geofenceRows);
+        })
+        .map(v => {
+            const gps = gpsMap.get(Number(v.traccar_id));
 
-                let distToLoading = 'N/A';
-                let distToUnloading = 'N/A';
-                let ignition = false;
-                let bodyStatus = 'Down';
-                let voltageVal = null;
-                let batteryFuelVal = 'N/A';
-                let io6Val = 0;
-                let io9Val = 0;
-                let input1Val = 'No';
-                let attrs = {};
+            let distToLoading = 'N/A';
+            let distToUnloading = 'N/A';
+            let ignition = false;
+            let bodyStatus = 'Down';
+            let voltageVal = null;
+            let batteryFuelVal = 'N/A';
+            let io6Val = 0;
+            let io9Val = 0;
+            let input1Val = 'No';
+            let attrs = {};
 
-                if (gps) {
-                    try {
-                        attrs = typeof gps.attributes === 'string' ? JSON.parse(gps.attributes) : (gps.attributes || {});
-                    } catch (e) {
-                        attrs = {};
-                    }
-
-                    ignition = attrs.ignition === true || attrs.ignition === 'true' || attrs.ignition === 1;
-
-                    if (attrs.io68 === 1 || attrs.io68 === '1' || attrs.body === 'up' || attrs.tipping === true) {
-                        bodyStatus = 'Up';
-                    } else {
-                        bodyStatus = 'Down';
-                    }
-
-                    io6Val = extractIo6(attrs);
-
-                    if (attrs.io9 !== undefined) {
-                        io9Val = Number(attrs.io9);
-                    } else if (attrs.adc1 !== undefined) {
-                        io9Val = Number(attrs.adc1);
-                    }
-
-                    input1Val = formatInput1(attrs);
-                    voltageVal = extractVoltage(attrs);
-
-                    if (voltageVal !== null) {
-                        batteryFuelVal = `${voltageVal.toFixed(1)} V`;
-                    } else if (attrs.batteryLevel !== undefined) {
-                        batteryFuelVal = `${attrs.batteryLevel}%`;
-                    } else if (attrs.fuel !== undefined) {
-                        batteryFuelVal = `${attrs.fuel}%`;
-                    }
-
-                    if (gps.latitude && gps.longitude) {
-                        if (loadingCenter) {
-                            const m = calculateDistance(gps.latitude, gps.longitude, loadingCenter.latitude, loadingCenter.longitude);
-                            distToLoading = (m / 1000).toFixed(2) + ' km';
-                        }
-                        if (unloadingCenter) {
-                            const m = calculateDistance(gps.latitude, gps.longitude, unloadingCenter.latitude, unloadingCenter.longitude);
-                            distToUnloading = (m / 1000).toFixed(2) + ' km';
-                        }
-                    }
+            if (gps) {
+                try {
+                    attrs = typeof gps.attributes === 'string' ? JSON.parse(gps.attributes) : (gps.attributes || {});
+                } catch (e) {
+                    attrs = {};
                 }
 
-                const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
-                const lastUpdate = v.last_update || (gps ? gps.device_last_update : null);
+                ignition = attrs.ignition === true || attrs.ignition === 'true' || attrs.ignition === 1;
 
-                return {
-                    ...v,
-                    imei: finalImei,
-                    lastUpdate,
-                    latitude: gps ? gps.latitude : null,
-                    longitude: gps ? gps.longitude : null,
-                    speed: gps ? Number(gps.speed || 0) : 0,
-                    address: gps ? gps.address : 'Location updating...',
-                    ignition,
-                    bodyStatus,
-                    io6: io6Val,
-                    io9: io9Val,
-                    input1: input1Val,
-                    in1: input1Val,
-                    voltage: voltageVal,
-                    batteryFuel: batteryFuelVal,
-                    distToLoading,
-                    distToUnloading
-                };
-            });
+                if (attrs.io68 === 1 || attrs.io68 === '1' || attrs.body === 'up' || attrs.tipping === true) {
+                    bodyStatus = 'Up';
+                } else {
+                    bodyStatus = 'Down';
+                }
 
+                io6Val = extractIo6(attrs);
+
+                if (attrs.io9 !== undefined) {
+                    io9Val = Number(attrs.io9);
+                } else if (attrs.adc1 !== undefined) {
+                    io9Val = Number(attrs.adc1);
+                }
+
+                input1Val = formatInput1(attrs);
+                voltageVal = extractVoltage(attrs);
+
+                if (voltageVal !== null) {
+                    batteryFuelVal = `${voltageVal.toFixed(1)} V`;
+                } else if (attrs.batteryLevel !== undefined) {
+                    batteryFuelVal = `${attrs.batteryLevel}%`;
+                } else if (attrs.fuel !== undefined) {
+                    batteryFuelVal = `${attrs.fuel}%`;
+                }
+
+                if (gps.latitude != null && gps.longitude != null) {
+                    if (loadingCenter) {
+                        const m = calculateDistance(gps.latitude, gps.longitude, loadingCenter.latitude, loadingCenter.longitude);
+                        distToLoading = (m / 1000).toFixed(2) + ' km';
+                    }
+                    if (unloadingCenter) {
+                        const m = calculateDistance(gps.latitude, gps.longitude, unloadingCenter.latitude, unloadingCenter.longitude);
+                        distToUnloading = (m / 1000).toFixed(2) + ' km';
+                    }
+                }
+            }
+
+            const finalImei = v.vehicle_imei || (gps ? gps.traccar_imei : null) || String(v.traccar_id);
+            const lastUpdate = v.last_update || (gps ? gps.device_last_update : null);
+
+            return {
+                ...v,
+                imei: finalImei,
+                lastUpdate,
+                latitude: gps ? gps.latitude : null,
+                longitude: gps ? gps.longitude : null,
+                speed: gps ? Number(gps.speed || 0) : 0,
+                address: gps ? gps.address : 'Location updating...',
+                ignition,
+                bodyStatus,
+                io6: io6Val,
+                io9: io9Val,
+                input1: input1Val,
+                in1: input1Val,
+                voltage: voltageVal,
+                batteryFuel: batteryFuelVal,
+                distToLoading,
+                distToUnloading
+            };
+        });
+};
+
+const getLiveVehicles = async (req, res) => {
+    try {
+        const now = Date.now();
+
+        if (liveCache.data && now < liveCache.expiresAt) {
+            return res.status(200).json(liveCache.data);
+        }
+
+        if (!liveCache.inFlight) {
+            liveCache.inFlight = computeLiveVehicles()
+                .then((data) => {
+                    liveCache.data = data;
+                    liveCache.expiresAt = Date.now() + LIVE_CACHE_TTL_MS;
+                    return data;
+                })
+                .finally(() => {
+                    liveCache.inFlight = null;
+                });
+        }
+
+        const finalData = await liveCache.inFlight;
         res.status(200).json(finalData);
     } catch (err) {
         console.error("Error in getLiveVehicles:", err);
