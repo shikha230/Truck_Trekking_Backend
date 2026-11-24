@@ -453,9 +453,10 @@ const getTruckHistory = async (req, res) => {
             console.warn("⚠️ Could not fetch tc_devices names:", devErr.message);
         }
 
+        // Convert p.devicetime (stored as UTC in Traccar) to explicit IST timestamptz / ISO string
         let queryText = `
             SELECT 
-                (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') as devicetime, 
+                to_char(p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS+05:30') as devicetime,
                 p.latitude, p.longitude, p.speed, p.course, p.attributes, p.deviceid, v.name as vehicle_name
             FROM tc_positions p 
             LEFT JOIN vehicles v ON p.deviceid = v.traccar_id
@@ -464,18 +465,22 @@ const getTruckHistory = async (req, res) => {
 
         if (deviceId && deviceId !== 'all') {
             queryParams.push(Number(deviceId));
-            queryText += ` WHERE p.deviceid = $1`;
+            queryText += ` WHERE p.deviceid = $${queryParams.length}`;
         }
 
         if (startDate && endDate) {
+            // Normalize incoming startDate / endDate as IST wall-clock time
+            const cleanStart = startDate.replace('T', ' ').replace(/\+05:30|Z/i, '').trim();
+            const cleanEnd = endDate.replace('T', ' ').replace(/\+05:30|Z/i, '').trim();
+
             const hasWhere = queryText.includes('WHERE');
             queryText += hasWhere ? ` AND ` : ` WHERE `;
-            queryText += `(p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') >= $${queryParams.length + 1}::timestamp 
-                          AND (p.devicetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') <= $${queryParams.length + 2}::timestamp`;
-            queryParams.push(startDate, endDate);
+            queryText += `(p.devicetime AT TIME ZONE 'UTC') >= ($${queryParams.length + 1}::timestamp AT TIME ZONE 'Asia/Kolkata')
+                          AND (p.devicetime AT TIME ZONE 'UTC') <= ($${queryParams.length + 2}::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+            queryParams.push(cleanStart, cleanEnd);
         }
 
-        queryText += ` ORDER BY p.devicetime ASC LIMIT 1000`;
+        queryText += ` ORDER BY p.devicetime ASC LIMIT 5000`;
 
         const result = await traccarPool.query(queryText, queryParams);
 
