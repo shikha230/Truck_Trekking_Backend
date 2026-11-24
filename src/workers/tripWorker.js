@@ -1,17 +1,53 @@
 const { pool, traccarPool } = require('../config/db');
 const geolib = require('geolib');
 
-const activeTrips = {}; 
+const activeTrips = {};
+
+// Cache geofences for 60s to avoid querying DB every 10s
+const GEOFENCE_CACHE_TTL_MS = 60000;
+let zoneCache = {
+    rows: [],
+    expiresAt: 0,
+};
+
+// Prevent overlapping interval ticks
+let isWorkerRunning = false;
+
+const getCachedZones = async () => {
+    const now = Date.now();
+    if (zoneCache.rows.length > 0 && now < zoneCache.expiresAt) {
+        return zoneCache.rows;
+    }
+
+    const res = await pool.query("SELECT * FROM geofences");
+    zoneCache = {
+        rows: res.rows || [],
+        expiresAt: now + GEOFENCE_CACHE_TTL_MS,
+    };
+    return zoneCache.rows;
+};
 
 const processTripDetection = async () => {
+    if (isWorkerRunning) return;
+    isWorkerRunning = true;
+
     try {
-        const zones = await pool.query("SELECT * FROM geofences");
-        
-        const latestPositions = await traccarPool.query(`
-            SELECT DISTINCT ON (deviceid) deviceid, devicetime, latitude, longitude, speed, attributes 
-            FROM tc_positions 
-            ORDER BY deviceid, devicetime DESC
-        `);
+        const [zonesRows, latestPositions] = await Promise.all([
+            getCachedZones(),
+            traccarPool.query(`
+                SELECT d.id AS deviceid,
+                       p.devicetime,
+                       p.latitude,
+                       p.longitude,
+                       p.speed,
+                       p.attributes
+                FROM tc_devices d
+                INNER JOIN tc_positions p ON p.id = d.positionid
+                WHERE p.devicetime >= NOW() - INTERVAL '24 hours'
+                  AND p.latitude IS NOT NULL
+                  AND p.longitude IS NOT NULL
+            `)
+        ]);
 
         for (const row of latestPositions.rows) {
             const deviceId = row.deviceid;
@@ -21,13 +57,13 @@ const processTripDetection = async () => {
             } catch (e) {
                 attributes = {};
             }
-            
+
             // Sensor Check (Traccar screenshot ke mutabiq 'in1' 'Yes' ya true ho sakta hai)
             const isTipperActive = attributes.in1 === true || attributes.in1 === 'Yes' || attributes.in1 == 1;
 
             // Geofence Check
             let currentZone = null;
-            for (const zone of zones.rows) {
+            for (const zone of zonesRows) {
                 const distance = geolib.getDistance(
                     { latitude: Number(row.latitude), longitude: Number(row.longitude) },
                     { latitude: Number(zone.latitude), longitude: Number(zone.longitude) }
@@ -53,8 +89,7 @@ const processTripDetection = async () => {
 
             // 2. Unloading Zone me pahunch kar Tipper Uthne par Status Update
             if (activeTrips[deviceId] && currentZone && currentZone.name.toLowerCase().includes('unloading')) {
-                if (isTipperActive) {
-                    activeUrips = activeTrips[deviceId];
+                if (isTipperActive && activeTrips[deviceId].status !== 'UNLOADING') {
                     activeTrips[deviceId].status = 'UNLOADING';
                     console.log(`[UNLOADING STARTED] Vehicle ${deviceId}`);
                 }
@@ -64,7 +99,7 @@ const processTripDetection = async () => {
             if (activeTrips[deviceId] && activeTrips[deviceId].status === 'UNLOADING') {
                 if (!isTipperActive) {
                     const tripData = activeTrips[deviceId];
-                    
+
                     await pool.query(`
                         INSERT INTO trips (vehicle_id, start_time, end_time, start_location, status)
                         VALUES ($1, $2, $3, $4, 'COMPLETED')
@@ -77,6 +112,8 @@ const processTripDetection = async () => {
         }
     } catch (err) {
         console.error("Worker Error:", err.message);
+    } finally {
+        isWorkerRunning = false;
     }
 };
 

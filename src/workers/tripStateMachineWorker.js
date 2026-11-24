@@ -1,10 +1,20 @@
-const { isPointWithinRadius } = require('geolib');
+const { isPointWithinRadius, isPointInPolygon } = require('geolib');
 const { pool, traccarPool } = require('../config/db');
 const { parseWKT } = require('../utils/distance');
-const { isPointInPolygon } = require('geolib');
 
 // In-Memory state management for live background worker
 const vehicleStates = {};
+
+// 60-second Geofence & Parsed Polygon Cache (avoids repeated DB queries & WKT parsing every 10s)
+const GEOFENCE_CACHE_TTL_MS = 60000;
+let geofenceCache = {
+    gpsLimitPolygon: null,
+    innerZones: [],
+    expiresAt: 0,
+};
+
+// Prevent overlapping worker runs if a DB query ever slows down
+let isWorkerRunning = false;
 
 const parseAttributes = (rawAttributes) => {
     if (!rawAttributes) return {};
@@ -13,7 +23,6 @@ const parseAttributes = (rawAttributes) => {
     }
     return rawAttributes;
 };
-
 
 // Helper: Extract IO6, IO9, IO1, Speed safely
 const getSensorValues = (attributes, speed) => {
@@ -50,45 +59,68 @@ const toGeolibPolygon = (coordinates) => {
     }));
 };
 
-const runTripStateMachine = async () => {
-    try {
-        // 1. Fetch all geofences from Traccar DB (tc_geofences)
-        const geofencesRes = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
-        if (geofencesRes.rows.length === 0) return;
+const getCachedZones = async () => {
+    const now = Date.now();
+    if (now < geofenceCache.expiresAt && (geofenceCache.gpsLimitPolygon || geofenceCache.innerZones.length > 0)) {
+        return geofenceCache;
+    }
 
-        let gpsLimitPolygon = null;
-        const innerZones = [];
+    const geofencesRes = await traccarPool.query(`SELECT id, name, area FROM tc_geofences`);
+    let gpsLimitPolygon = null;
+    const innerZones = [];
 
-        for (const g of geofencesRes.rows) {
-            const { coordinates, center } = parseWKT(g.area);
-            const polygon = toGeolibPolygon(coordinates);
-            const nameLower = (g.name || '').toLowerCase();
+    for (const g of geofencesRes.rows) {
+        const { coordinates, center } = parseWKT(g.area);
+        const polygon = toGeolibPolygon(coordinates);
+        const nameLower = (g.name || '').toLowerCase();
 
-            // Separate "GPS LIMITs" master boundary from inner Loading/Unloading zones
-            if (nameLower.includes('gps limit')) {
-                gpsLimitPolygon = polygon;
-            } else {
-                innerZones.push({
-                    id: g.id,
-                    name: nameLower,
-                    polygon,
-                    center
-                });
-            }
+        if (nameLower.includes('gps limit')) {
+            gpsLimitPolygon = polygon;
+        } else {
+            innerZones.push({
+                id: g.id,
+                name: nameLower,
+                polygon,
+                center
+            });
         }
+    }
 
-        // 2. Fetch device names to distinguish CAT vs Volvo
-        const devicesRes = await traccarPool.query(`SELECT id, name FROM tc_devices`);
-        const deviceMap = {};
-        devicesRes.rows.forEach(d => { deviceMap[d.id] = d.name; });
+    geofenceCache = {
+        gpsLimitPolygon,
+        innerZones,
+        expiresAt: now + GEOFENCE_CACHE_TTL_MS,
+    };
 
-        // 3. Fetch latest position WITH attributes for every device
-        const latestPositions = await traccarPool.query(`
-            SELECT DISTINCT ON (deviceid) 
-                deviceid, devicetime, latitude, longitude, speed, attributes 
-            FROM tc_positions
-            ORDER BY deviceid, devicetime DESC
-        `);
+    return geofenceCache;
+};
+
+const runTripStateMachine = async () => {
+    if (isWorkerRunning) return;
+    isWorkerRunning = true;
+
+    try {
+        // 1. Fetch cached geofences & latest device positions in parallel (fast primary-key join via d.positionid)
+        const [zonesData, latestPositions] = await Promise.all([
+            getCachedZones(),
+            traccarPool.query(`
+                SELECT d.id AS deviceid,
+                       d.name AS device_name,
+                       p.devicetime,
+                       p.latitude,
+                       p.longitude,
+                       p.speed,
+                       p.attributes
+                FROM tc_devices d
+                INNER JOIN tc_positions p ON p.id = d.positionid
+                WHERE p.devicetime >= NOW() - INTERVAL '24 hours'
+                  AND p.latitude IS NOT NULL
+                  AND p.longitude IS NOT NULL
+            `)
+        ]);
+
+        const { gpsLimitPolygon, innerZones } = zonesData;
+        if (!gpsLimitPolygon && innerZones.length === 0) return;
 
         for (const pos of latestPositions.rows) {
             const deviceId = pos.deviceid;
@@ -102,7 +134,7 @@ const runTripStateMachine = async () => {
                 continue;
             }
 
-            const deviceName = deviceMap[deviceId] || 'CAT Dumper';
+            const deviceName = pos.device_name || 'CAT Dumper';
             const rules = getVehicleThresholds(deviceName);
             const devTime = new Date(pos.devicetime);
             const attrs = parseAttributes(pos.attributes);
@@ -225,7 +257,10 @@ const runTripStateMachine = async () => {
         }
     } catch (err) {
         console.error("❌ Error in Trip State Machine Worker:", err.message);
+    } finally {
+        isWorkerRunning = false;
     }
 };
+
 setInterval(runTripStateMachine, 10000);
 module.exports = { runTripStateMachine };
