@@ -350,4 +350,18 @@ app.get('/api/historical_playback', async (traccarPool, req, res) => {
         return res.status(500).send('Error fetching historical telemetry');
     }
 });
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+    if (durationMs > 500) { // 500ms se zyada wali har API log hogi
+      console.warn(
+        `[SLOW API] ${req.method} ${req.originalUrl} -> ${res.statusCode} in ${durationMs.toFixed(1)} ms`
+      );
+    }
+  });
+
+  next();
+});
 module.exports = app;

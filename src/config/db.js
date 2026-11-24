@@ -68,7 +68,6 @@
 // initializeAdmin();
 
 // module.exports = { pool, traccarPool };
-
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -77,7 +76,10 @@ const pool = new Pool({
     user: process.env.DB_USER || 'traccar',
     password: process.env.DB_PASSWORD || 'Ob6bkmqbpQa4aARnrIIUEovVsBBFLHDr',
     database: process.env.DB_NAME_APP || 'traccar',
-    port: process.env.DB_PORT || 5433,
+    port: Number(process.env.DB_PORT) || 5433,
+    max: Number(process.env.PG_POOL_MAX) || 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
 });
 
 const traccarPool = new Pool({
@@ -85,32 +87,63 @@ const traccarPool = new Pool({
     user: process.env.DB_USER || 'traccar',
     password: process.env.DB_PASSWORD || 'Ob6bkmqbpQa4aARnrIIUEovVsBBFLHDr',
     database: process.env.DB_NAME_TRACCAR || 'traccar',
-    port: process.env.DB_PORT || 5433,
+    port: Number(process.env.DB_PORT) || 5433,
+    max: Number(process.env.TRACCAR_POOL_MAX) || 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
 });
+
+const withQueryTimer = (dbPool, label = 'DB') => {
+    const originalQuery = dbPool.query.bind(dbPool);
+
+    dbPool.query = async (text, params) => {
+        const start = Date.now();
+        try {
+            const res = await originalQuery(text, params);
+            const ms = Date.now() - start;
+            if (ms > 300) {
+                const queryText = typeof text === 'string'
+                    ? text
+                    : (text && text.text ? text.text : String(text));
+                console.warn(`[SLOW ${label} QUERY - ${ms}ms]:`, queryText.replace(/\s+/g, ' ').trim().slice(0, 160));
+            }
+            return res;
+        } catch (err) {
+            console.error(`[${label} QUERY ERROR after ${Date.now() - start}ms]:`, err.message);
+            throw err;
+        }
+    };
+};
+
+pool.on('error', (err) => {
+    console.error('❌ Unexpected MAIN_PG pool error:', err.message);
+});
+
+traccarPool.on('error', (err) => {
+    console.error('❌ Unexpected TRACCAR_PG pool error:', err.message);
+});
+
+// Dono pools par timer lagayein
+withQueryTimer(pool, 'MAIN_PG');
+withQueryTimer(traccarPool, 'TRACCAR_PG');
 
 const initializeDatabase = async () => {
     try {
         await pool.query(`CREATE TABLE IF NOT EXISTS admins (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-        
         await pool.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, email VARCHAR(150) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, role VARCHAR(50) DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-        
         await pool.query(`CREATE TABLE IF NOT EXISTS vehicles (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, traccar_id INT UNIQUE, type VARCHAR(50) DEFAULT 'truck', imei VARCHAR(100), status VARCHAR(50) DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
         await pool.query(`ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';`);
-
         await pool.query(`CREATE TABLE IF NOT EXISTS vehicle_status (id SERIAL PRIMARY KEY, vehicle_id INT, current_state VARCHAR(100), latitude NUMERIC, longitude NUMERIC, speed NUMERIC, ignition BOOLEAN, odometer NUMERIC, last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
         await pool.query(`ALTER TABLE vehicle_status ADD COLUMN IF NOT EXISTS latitude NUMERIC;`);
         await pool.query(`ALTER TABLE vehicle_status ADD COLUMN IF NOT EXISTS longitude NUMERIC;`);
         await pool.query(`ALTER TABLE vehicle_status ADD COLUMN IF NOT EXISTS speed NUMERIC;`);
-
         await pool.query(`CREATE TABLE IF NOT EXISTS trips (id SERIAL PRIMARY KEY, vehicle_id INT, status VARCHAR(50) DEFAULT 'ongoing', start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, end_time TIMESTAMP);`);
-        
         await pool.query(`CREATE TABLE IF NOT EXISTS geofences (id SERIAL PRIMARY KEY, name VARCHAR(100), type VARCHAR(50), latitude NUMERIC, longitude NUMERIC, radius NUMERIC, area TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-        
         await pool.query(`CREATE TABLE IF NOT EXISTS event_logs (id SERIAL PRIMARY KEY, vehicle_id INT, event_type VARCHAR(100), details TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
         await pool.query(`ALTER TABLE event_logs ADD COLUMN IF NOT EXISTS vehicle_id INT;`);
         await pool.query(`ALTER TABLE event_logs ADD COLUMN IF NOT EXISTS details TEXT;`);
 
-        const checkAdmin = await pool.query('SELECT * FROM admins WHERE email = $1', ['admin@trucktrak.com']);
+        const checkAdmin = await pool.query('SELECT id FROM admins WHERE email = $1', ['admin@trucktrak.com']);
         if (checkAdmin.rows.length === 0) {
             await pool.query(
                 'INSERT INTO admins (name, email, password) VALUES ($1, $2, $3)',
@@ -121,7 +154,7 @@ const initializeDatabase = async () => {
 
         console.log('✅ Local database connection & tables verified successfully!');
     } catch (err) {
-        console.error('❌ Database initialization error:', err);
+        console.error('❌ Database initialization error:', err.message);
     }
 };
 
