@@ -121,6 +121,125 @@ app.use('/api/users', userRoutes);
 // });
 
 
+// app.get('/api/download_custom_csv', async (req, res) => {
+//   try {
+//     const { deviceId, startDate, endDate } = req.query;
+
+//     const whereClauses = ['1=1'];
+//     const queryParams = [];
+//     let paramIndex = 1;
+
+//     if (deviceId && deviceId !== 'all') {
+//       const ids = String(deviceId)
+//         .split(',')
+//         .map((id) => Number(id.trim()))
+//         .filter((id) => Number.isInteger(id) && id > 0);
+
+//       if (ids.length === 0) {
+//         return res.status(200).json([]);
+//       }
+
+//       if (ids.length === 1) {
+//         whereClauses.push(`p.deviceid = $${paramIndex}`);
+//         queryParams.push(ids[0]);
+//         paramIndex++;
+//       } else {
+//         whereClauses.push(`p.deviceid = ANY($${paramIndex}::int[])`);
+//         queryParams.push(ids);
+//         paramIndex++;
+//       }
+//     }
+
+//     // IST timestamp -> UTC for index-friendly comparison on p.devicetime
+//     if (startDate && startDate !== 'undefined' && startDate.trim() !== '') {
+//       whereClauses.push(`p.devicetime >= ($${paramIndex}::timestamp - INTERVAL '5 hours 30 minutes')`);
+//       queryParams.push(startDate.replace('T', ' '));
+//       paramIndex++;
+//     }
+
+//     if (endDate && endDate !== 'undefined' && endDate.trim() !== '') {
+//       whereClauses.push(`p.devicetime <= ($${paramIndex}::timestamp - INTERVAL '5 hours 30 minutes')`);
+//       queryParams.push(endDate.replace('T', ' '));
+//       paramIndex++;
+//     }
+
+//     const query = `
+//       WITH filtered_pos AS (
+//         SELECT
+//           p.id,
+//           p.deviceid,
+//           p.protocol,
+//           p.servertime,
+//           p.devicetime,
+//           p.fixtime,
+//           p.valid,
+//           p.latitude,
+//           p.longitude,
+//           p.altitude,
+//           p.speed,
+//           p.course,
+//           p.address,
+//           p.attributes::jsonb AS attr
+//         FROM tc_positions p
+//         WHERE ${whereClauses.join(' AND ')}
+//         ORDER BY p.deviceid ASC, p.devicetime ASC
+//         LIMIT 50000
+//       )
+//       SELECT
+//         fp.id,
+//         d.name AS device_name,
+//         d.uniqueid AS device_imei,
+//         fp.protocol,
+//         TO_CHAR(fp.servertime + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD HH12:MI:SS AM') AS servertime,
+//         TO_CHAR(fp.devicetime + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD HH12:MI:SS AM') AS devicetime,
+//         TO_CHAR(fp.fixtime + INTERVAL '5 hours 30 minutes', 'YYYY-MM-DD HH12:MI:SS AM') AS fixtime,
+//         fp.valid,
+//         fp.latitude,
+//         fp.longitude,
+//         fp.altitude,
+//         fp.speed,
+//         fp.course,
+//         fp.address,
+//         COALESCE(fp.attr->>'sat', fp.attr->>'SAT') AS satellites,
+//         COALESCE(fp.attr->>'ignition', fp.attr->>'Ignition') AS ignition,
+//         fp.attr->>'motion' AS motion,
+//         fp.attr->>'power' AS power,
+//         fp.attr->>'battery' AS battery,
+//         fp.attr->>'hdop' AS hdop,
+//         fp.attr->>'pdop' AS pdop,
+//         fp.attr->>'odometer' AS odometer,
+//         fp.attr->>'totalDistance' AS total_distance,
+//         fp.attr->>'hours' AS hours,
+//         fp.attr->>'rssi' AS rssi,
+//         fp.attr->>'event' AS event,
+//         fp.attr->>'priority' AS priority,
+//         fp.attr->>'operator' AS operator,
+//         fp.attr->>'in1' AS input_1,
+//         fp.attr->>'out1' AS output_1,
+//         fp.attr->>'io9' AS io9,
+//         COALESCE(
+//           fp.attr->>'io6',
+//           fp.attr->>'IO6',
+//           fp.attr->>'Io6',
+//           (fp.attr->'io6')::text
+//         ) AS io6,
+//         fp.attr->>'io69' AS io69,
+//         fp.attr->>'io68' AS io68,
+//         fp.attr->>'io113' AS io113
+//       FROM filtered_pos fp
+//       JOIN tc_devices d ON fp.deviceid = d.id
+//       ORDER BY d.name ASC, fp.devicetime ASC;
+//     `;
+
+//     const result = await traccarPool.query(query, queryParams);
+//     return res.status(200).json(result.rows || []);
+//   } catch (err) {
+//     console.error('Custom Report Error:', err);
+//     return res.status(500).json({ error: 'Error generating filtered report' });
+//   }
+// });
+
+
 app.get('/api/download_custom_csv', async (req, res) => {
   try {
     const { deviceId, startDate, endDate } = req.query;
@@ -183,7 +302,6 @@ app.get('/api/download_custom_csv', async (req, res) => {
         FROM tc_positions p
         WHERE ${whereClauses.join(' AND ')}
         ORDER BY p.deviceid ASC, p.devicetime ASC
-        LIMIT 50000
       )
       SELECT
         fp.id,
